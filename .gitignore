@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+.DS_Store
+firmware/.pio/
+firmware/.cache/
+firmware/compile_commands.json

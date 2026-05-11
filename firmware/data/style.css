@@ -1,0 +1,233 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f7f5;
+  --panel: #ffffff;
+  --ink: #16211d;
+  --muted: #62716b;
+  --line: #d9e2dd;
+  --accent: #0f7b6c;
+  --accent-dark: #075f55;
+  --warn: #a83f2d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.shell {
+  width: min(960px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 32px;
+}
+
+p {
+  margin: 0;
+}
+
+#connection {
+  color: var(--warn);
+}
+
+#connection.ok {
+  color: var(--accent);
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab,
+button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  cursor: pointer;
+}
+
+.tab.active,
+.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.temp-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+.temp-panel > div,
+.status-grid > div,
+form,
+fieldset {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.temp-panel > div {
+  padding: 18px;
+}
+
+.label,
+.status-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.temp-panel strong {
+  font-size: 52px;
+  line-height: 1;
+}
+
+.stepper {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 8px;
+  min-width: 76px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.stepper button {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.control {
+  min-height: 64px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.status-grid > div {
+  padding: 14px;
+}
+
+.status-grid strong {
+  font-size: 20px;
+}
+
+#toast {
+  min-height: 24px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+
+form {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px;
+}
+
+fieldset label {
+  display: flex;
+  align-items: center;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.field-grid label {
+  display: grid;
+  align-items: stretch;
+}
+
+fieldset input[type="checkbox"],
+label > input[type="checkbox"] {
+  width: auto;
+  min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  .temp-panel {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .controls,
+  .status-grid,
+  .field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BP100G2 Controller</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>BP100G2</h1>
+          <p id="connection">Connecting</p>
+        </div>
+        <nav class="tabs" aria-label="Views">
+          <button class="tab active" data-view="dashboard">Dashboard</button>
+          <button class="tab" data-view="settings">Settings</button>
+        </nav>
+      </header>
+
+      <section id="dashboard" class="view active">
+        <section class="temp-panel">
+          <div>
+            <span class="label">Water</span>
+            <strong id="waterTemp">--</strong>
+          </div>
+          <div>
+            <span class="label">Target</span>
+            <strong id="setTemp">--</strong>
+          </div>
+          <div class="stepper">
+            <button id="tempDown" aria-label="Lower target temperature">-</button>
+            <button id="tempUp" aria-label="Raise target temperature">+</button>
+          </div>
+        </section>
+
+        <section class="controls">
+          <button data-action="jet1" class="control">Jet 1</button>
+          <button data-action="jet2" class="control">Jet 2</button>
+          <button data-action="light" class="control">Light</button>
+          <button data-action="heatMode" class="control">Heat Mode</button>
+        </section>
+
+        <section class="status-grid">
+          <div><span>Heating</span><strong id="heating">--</strong></div>
+          <div><span>Mode</span><strong id="heatMode">--</strong></div>
+          <div><span>Spa Time</span><strong id="spaTime">--</strong></div>
+          <div><span>Last Frame</span><strong id="lastFrame">--</strong></div>
+          <div><span>Filter 1</span><strong id="filterCycle1">--</strong></div>
+          <div><span>Filter 2</span><strong id="filterCycle2">--</strong></div>
+        </section>
+
+        <button id="syncTime" class="primary">Sync Time</button>
+      </section>
+
+      <section id="settings" class="view">
+        <form id="settingsForm">
+          <label>
+            Timezone
+            <input name="timezone" autocomplete="off" />
+          </label>
+          <fieldset>
+            <legend>Spa Capabilities</legend>
+            <label><input type="checkbox" name="jet1" /> Jet 1</label>
+            <label><input type="checkbox" name="jet2" /> Jet 2</label>
+            <label><input type="checkbox" name="light" /> Light</label>
+            <label><input type="checkbox" name="heatMode" /> Heat mode</label>
+            <label><input type="checkbox" name="setTime" /> Time sync</label>
+            <label><input type="checkbox" name="filterCycles" /> Filter cycles</label>
+          </fieldset>
+          <fieldset>
+            <legend>Filter Cycles</legend>
+            <div class="field-grid">
+              <label>
+                Cycle 1 Start
+                <input name="filterCycle1Start" type="number" min="0" max="23" />
+              </label>
+              <label>
+                Cycle 1 Duration
+                <input name="filterCycle1Duration" type="number" min="0" max="24" />
+              </label>
+              <label>
+                Cycle 2 Start
+                <input name="filterCycle2Start" type="number" min="0" max="23" />
+              </label>
+              <label>
+                Cycle 2 Duration
+                <input name="filterCycle2Duration" type="number" min="0" max="24" />
+              </label>
+            </div>
+            <label><input type="checkbox" name="filterCycle2Enabled" /> Enable cycle 2</label>
+          </fieldset>
+          <label>
+            Backlight Timeout
+            <input name="backlightTimeout" type="number" min="0" max="60" />
+          </label>
+          <label><input type="checkbox" name="authEnabled" /> Require browser password</label>
+          <label>
+            Password
+            <input name="authPassword" type="password" autocomplete="new-password" />
+          </label>
+          <button class="primary" type="submit">Save Settings</button>
+        </form>
+      </section>
+      <p id="toast" role="status"></p>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
