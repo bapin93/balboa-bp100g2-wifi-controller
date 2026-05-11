@@ -904,34 +904,59 @@ void SpaController::processFilterProgram() {
   if (filterProgramPhase_ == FilterProgramStartTempFlash) {
     waitTimeoutMs = 250;
   }
+  const uint8_t targetSelector = filterProgramCycle_ == 2 ? 0x08 : 0x04;
+  const bool onStartHourPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0b;
+  const bool onStartHourEdit = menuMajor_ == 0x04 && menuMinor_ == 0x07;
+  const bool onStartMinuteEdit = menuMajor_ == 0x04 && menuMinor_ == 0x08;
+  const bool onRunHoursPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0d;
+  const bool onFilterEndPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0c;
+  const bool onRunHourEdit = menuMajor_ == 0x07 && menuMinor_ == 0x07;
+  const bool onRunMinuteEdit = menuMajor_ == 0x07 && menuMinor_ == 0x08;
+  const bool onFilterMenu = menuMajor_ == 0x03 && menuMinor_ == 0x17 && filterMenuSelector_ == targetSelector;
+  const bool onFilter2EnableOff = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0e &&
+                                  filterMenuSelector_ == targetSelector;
+  const bool onFilter2EnableOn = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0f &&
+                                 filterMenuSelector_ == targetSelector;
+  const bool onFilter2EnableScreen = onFilter2EnableOff || onFilter2EnableOn;
+  const bool filter2EnableMatched = filterProgramEnabled_ ? onFilter2EnableOn : onFilter2EnableOff;
+  const auto filterPhaseReachedExpectedScreen = [&]() {
+    switch (filterProgramPhase_) {
+      case FilterProgramNavigate:
+        return onFilterMenu;
+      case FilterProgramSelectEnable:
+        return onFilter2EnableScreen;
+      case FilterProgramSetEnable:
+        return filter2EnableMatched;
+      case FilterProgramSelectBegin:
+        return onStartHourPrompt || onStartHourEdit;
+      case FilterProgramSelectStartMinute:
+        return onStartMinuteEdit;
+      case FilterProgramSelectRunHours:
+        return onRunHoursPrompt || onRunHourEdit;
+      case FilterProgramSelectRunMinute:
+        return onRunMinuteEdit;
+      case FilterProgramShowEnd:
+        return onFilterEndPrompt;
+      default:
+        return true;
+    }
+  };
   if (filterProgramWaiting_) {
-    if (state_.lastUpdateMs == filterProgramStatusMs_ && now - filterProgramCommandMs_ < waitTimeoutMs) {
+    const bool statusChanged = state_.lastUpdateMs != filterProgramStatusMs_;
+    const bool timedOut = now - filterProgramCommandMs_ >= waitTimeoutMs;
+    if ((!statusChanged || !filterPhaseReachedExpectedScreen()) && !timedOut) {
       return;
     }
     logDebug("[balboa] filter%u phase complete phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u statusChanged=%u elapsed=%lu",
              filterProgramCycle_, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_, filterMenuSelector_,
-             editValueHour_, editValueMinute_, state_.lastUpdateMs != filterProgramStatusMs_ ? 1 : 0,
+             editValueHour_, editValueMinute_, statusChanged ? 1 : 0,
              static_cast<unsigned long>(now - filterProgramCommandMs_));
     filterProgramWaiting_ = false;
-    const uint8_t targetSelector = filterProgramCycle_ == 2 ? 0x08 : 0x04;
-    const bool onStartHourPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0b;
-    const bool onStartHourEdit = menuMajor_ == 0x04 && menuMinor_ == 0x07;
-    const bool onStartMinuteEdit = menuMajor_ == 0x04 && menuMinor_ == 0x08;
-    const bool onRunHoursPrompt = menuMajor_ == 0x06 && (menuMinor_ == 0x0d || menuMinor_ == 0x0c);
-    const bool onRunHourEdit = menuMajor_ == 0x07 && menuMinor_ == 0x07;
-    const bool onRunMinuteEdit = menuMajor_ == 0x07 && menuMinor_ == 0x08;
-    const bool onFilterMenu = menuMajor_ == 0x03 && menuMinor_ == 0x17 && filterMenuSelector_ == targetSelector;
-    const bool onFilter2EnableOff = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0e &&
-                                    filterMenuSelector_ == targetSelector;
-    const bool onFilter2EnableOn = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0f &&
-                                   filterMenuSelector_ == targetSelector;
-    const bool onFilter2EnableScreen = onFilter2EnableOff || onFilter2EnableOn;
-    const bool filter2EnableMatched = filterProgramEnabled_ ? onFilter2EnableOn : onFilter2EnableOff;
-    logDebug("[balboa] filter%u screen flags targetSelector=%02x filterMenu=%u f2Enable=%u f2Off=%u f2On=%u startPrompt=%u startHour=%u startMin=%u runPrompt=%u runHour=%u runMin=%u targetEnabled=%u readOnly=%u",
+    logDebug("[balboa] filter%u screen flags targetSelector=%02x filterMenu=%u f2Enable=%u f2Off=%u f2On=%u startPrompt=%u startHour=%u startMin=%u runPrompt=%u endPrompt=%u runHour=%u runMin=%u targetEnabled=%u readOnly=%u",
              filterProgramCycle_, targetSelector, onFilterMenu ? 1 : 0, onFilter2EnableScreen ? 1 : 0,
              onFilter2EnableOff ? 1 : 0, onFilter2EnableOn ? 1 : 0,
              onStartHourPrompt ? 1 : 0, onStartHourEdit ? 1 : 0, onStartMinuteEdit ? 1 : 0,
-             onRunHoursPrompt ? 1 : 0, onRunHourEdit ? 1 : 0, onRunMinuteEdit ? 1 : 0,
+             onRunHoursPrompt ? 1 : 0, onFilterEndPrompt ? 1 : 0, onRunHourEdit ? 1 : 0, onRunMinuteEdit ? 1 : 0,
              filterProgramEnabled_ ? 1 : 0, filterProgramReadOnly_ ? 1 : 0);
 
     if (filterProgramPhase_ == FilterProgramStartTempFlash) {
@@ -967,7 +992,7 @@ void SpaController::processFilterProgram() {
         filterProgramPhase_ = FilterProgramAdjustRunMinute;
       }
     } else if (filterProgramPhase_ == FilterProgramShowEnd) {
-      if (onRunHoursPrompt) {
+      if (onFilterEndPrompt) {
         filterProgramPhase_ = FilterProgramSave;
       }
     } else if (filterProgramPhase_ == FilterProgramSave) {
@@ -1146,7 +1171,7 @@ void SpaController::processFilterProgram() {
       sendFilterButton("filter_run_hour_select", ButtonLight);
       break;
     case FilterProgramAdjustRunHour:
-      if ((menuMajor_ == 0x06 && menuMinor_ == 0x0d) || (menuMajor_ == 0x06 && menuMinor_ == 0x0c)) {
+      if (menuMajor_ == 0x06 && menuMinor_ == 0x0d) {
         sendFilterButton("filter_run_hour_enter", ButtonTempUp);
         break;
       }
