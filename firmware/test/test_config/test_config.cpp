@@ -46,19 +46,40 @@ void test_valid_config_updates_filter_cycles() {
   caps["filterCycles"] = true;
   JsonObject filters = doc["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = 6;
+  filters["cycle1StartMinute"] = 15;
   filters["cycle1Duration"] = 3;
+  filters["cycle1DurationMinute"] = 30;
   filters["cycle2Enabled"] = true;
   filters["cycle2Start"] = 18;
+  filters["cycle2StartMinute"] = 45;
   filters["cycle2Duration"] = 2;
+  filters["cycle2DurationMinute"] = 15;
 
   TEST_ASSERT_TRUE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
   TEST_ASSERT_NULL(error);
   TEST_ASSERT_TRUE(next.filterCycles);
   TEST_ASSERT_EQUAL_UINT8(6, next.filterCycle1Start);
+  TEST_ASSERT_EQUAL_UINT8(15, next.filterCycle1StartMinute);
   TEST_ASSERT_EQUAL_UINT8(3, next.filterCycle1Duration);
+  TEST_ASSERT_EQUAL_UINT8(30, next.filterCycle1DurationMinute);
   TEST_ASSERT_TRUE(next.filterCycle2Enabled);
   TEST_ASSERT_EQUAL_UINT8(18, next.filterCycle2Start);
+  TEST_ASSERT_EQUAL_UINT8(45, next.filterCycle2StartMinute);
   TEST_ASSERT_EQUAL_UINT8(2, next.filterCycle2Duration);
+  TEST_ASSERT_EQUAL_UINT8(15, next.filterCycle2DurationMinute);
+}
+
+void test_rejects_bad_filter_cycle_minute() {
+  DeviceConfig current;
+  DeviceConfig next;
+  const char *error = nullptr;
+
+  JsonDocument doc;
+  JsonObject filters = doc["filterCycles"].to<JsonObject>();
+  filters["cycle1StartMinute"] = 10;
+
+  TEST_ASSERT_FALSE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
+  TEST_ASSERT_NOT_NULL(error);
 }
 
 void test_rejects_bad_filter_cycle_start() {
@@ -93,6 +114,7 @@ int main(int argc, char **argv) {
   RUN_TEST(test_rejects_bad_backlight_timeout);
   RUN_TEST(test_valid_config_updates_filter_cycles);
   RUN_TEST(test_rejects_bad_filter_cycle_start);
+  RUN_TEST(test_rejects_bad_filter_cycle_minute);
   RUN_TEST(test_rejects_long_timezone);
   return UNITY_END();
 }

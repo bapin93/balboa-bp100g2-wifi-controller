@@ -18,9 +18,14 @@ class WebServerHub {
   void setupRoutes();
   void handleCommandBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
   bool isAuthorized(AsyncWebServerRequest *request) const;
+  bool isValidCommandLogName(const String &name) const;
   void sendState(AsyncWebServerRequest *request);
   void sendConfig(AsyncWebServerRequest *request);
+  void sendCommandLogList(AsyncWebServerRequest *request);
+  void sendCommandLogFile(AsyncWebServerRequest *request);
   void sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result);
+  void cacheAcceptedCommand(JsonVariantConst command, const Balboa::CommandResult &result);
+  void persistFilterCycleCache(const Balboa::FilterCycleCache &cache);
   String stateJson();
   String commandResultJson(const Balboa::CommandResult &result);
   void applyConfigToSpa();
@@ -31,4 +36,5 @@ class WebServerHub {
   Store &store_;
   DeviceConfig &config_;
   uint32_t lastBroadcastMs_ = 0;
+  bool stateBroadcastPending_ = false;
 };

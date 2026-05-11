@@ -2,109 +2,267 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BP100G2 Controller</title>
-    <link rel="stylesheet" href="/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>BP100G2</title>
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="shell">
+    <div class="shell">
       <header class="topbar">
-        <div>
-          <h1>BP100G2</h1>
-          <p id="connection">Connecting</p>
+        <h1>BP100G2</h1>
+        <div class="conn-pill">
+          <span class="conn-dot"></span>
+          <span id="connection">Connecting</span>
         </div>
-        <nav class="tabs" aria-label="Views">
-          <button class="tab active" data-view="dashboard">Dashboard</button>
-          <button class="tab" data-view="settings">Settings</button>
-        </nav>
       </header>
 
+      <!-- Dashboard -->
       <section id="dashboard" class="view active">
-        <section class="temp-panel">
-          <div>
-            <span class="label">Water</span>
-            <strong id="waterTemp">--</strong>
-          </div>
-          <div>
-            <span class="label">Target</span>
-            <strong id="setTemp">--</strong>
-          </div>
-          <div class="stepper">
-            <button id="tempDown" aria-label="Lower target temperature">-</button>
-            <button id="tempUp" aria-label="Raise target temperature">+</button>
-          </div>
-        </section>
-
-        <section class="controls">
-          <button data-action="jet1" class="control">Jet 1</button>
-          <button data-action="jet2" class="control">Jet 2</button>
-          <button data-action="light" class="control">Light</button>
-          <button data-action="heatMode" class="control">Heat Mode</button>
-        </section>
-
-        <section class="status-grid">
-          <div><span>Heating</span><strong id="heating">--</strong></div>
-          <div><span>Mode</span><strong id="heatMode">--</strong></div>
-          <div><span>Spa Time</span><strong id="spaTime">--</strong></div>
-          <div><span>Last Frame</span><strong id="lastFrame">--</strong></div>
-          <div><span>Filter 1</span><strong id="filterCycle1">--</strong></div>
-          <div><span>Filter 2</span><strong id="filterCycle2">--</strong></div>
-        </section>
-
-        <button id="syncTime" class="primary">Sync Time</button>
+        <div class="spa-status-bar">
+          <span class="spa-status-item" id="heaterStatus">Heater Off</span>
+          <span class="spa-status-divider"></span>
+          <span class="spa-status-item" id="filterStatus">No Filter Running</span>
+        </div>
+        <div class="orb-wrap">
+          <div class="orb-heating-ring" id="heatingRing"></div>
+          <button class="temp-orb" id="tempOrb" aria-label="Tap to set temperature">
+            <span class="orb-set" id="setTemp">--</span>
+            <span class="orb-sublabel">set</span>
+            <span class="orb-water" id="waterTemp">--</span>
+            <span class="orb-sublabel">water</span>
+          </button>
+        </div>
+        <div class="toggle-row">
+          <button class="toggle-btn" data-action="light" aria-pressed="false">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"/>
+              <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            <span>Light</span>
+          </button>
+          <button class="toggle-btn" data-action="jet1" aria-pressed="false">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.59 4.59A2 2 0 1 1 11 8H2"/><path d="M11.51 17.41A2 2 0 1 0 13 14H2"/><path d="M15.73 4.73A2.5 2.5 0 1 1 17.5 9H2"/>
+            </svg>
+            <span>Jet 1</span>
+            <span class="toggle-state" id="jet1ButtonState">Off</span>
+          </button>
+          <button class="toggle-btn" data-action="jet2" aria-pressed="false">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.59 4.59A2 2 0 1 1 11 8H2"/><path d="M11.51 17.41A2 2 0 1 0 13 14H2"/><path d="M15.73 4.73A2.5 2.5 0 1 1 17.5 9H2"/>
+            </svg>
+            <span>Jet 2</span>
+            <span class="toggle-state" id="jet2ButtonState">Off</span>
+          </button>
+        </div>
       </section>
 
+      <!-- Stats -->
+      <section id="stats" class="view">
+        <div class="stat-grid">
+          <div class="stat-card"><span class="stat-label">Heating</span><strong id="heating">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Mode</span><strong id="heatMode">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Spa Time</span><strong id="spaTime">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Signal</span><strong id="lastFrame">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Filter 1</span><strong id="filterCycle1">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Filter 2</span><strong id="filterCycle2">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Jet 1</span><strong id="jet1State">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Jet 2</span><strong id="jet2State">--</strong></div>
+          <div class="stat-card"><span class="stat-label">Light</span><strong id="lightState">--</strong></div>
+        </div>
+        <div class="action-row">
+          <button class="pill-btn" data-action="heatMode">Cycle Heat Mode</button>
+        </div>
+      </section>
+
+      <!-- Diagnostics -->
+      <section id="diagnostics" class="view">
+        <div class="capture-header">
+          <div>
+            <p class="settings-section-title">Status Capture</p>
+            <strong id="captureState">Stopped</strong>
+          </div>
+          <span id="captureCount" class="capture-count">0 lines</span>
+        </div>
+        <div class="action-row capture-actions">
+          <button id="startCapture" class="pill-btn accent" type="button">Start Capture</button>
+          <button id="stopCapture" class="pill-btn" type="button">Stop</button>
+        </div>
+        <textarea id="captureLog" class="capture-log" readonly spellcheck="false"></textarea>
+        <div class="action-row capture-actions">
+          <button id="copyCapture" class="pill-btn" type="button">Copy</button>
+          <button id="clearCapture" class="pill-btn" type="button">Clear Capture</button>
+        </div>
+      </section>
+
+      <!-- Settings -->
       <section id="settings" class="view">
         <form id="settingsForm">
-          <label>
-            Timezone
-            <input name="timezone" autocomplete="off" />
-          </label>
-          <fieldset>
-            <legend>Spa Capabilities</legend>
-            <label><input type="checkbox" name="jet1" /> Jet 1</label>
-            <label><input type="checkbox" name="jet2" /> Jet 2</label>
-            <label><input type="checkbox" name="light" /> Light</label>
-            <label><input type="checkbox" name="heatMode" /> Heat mode</label>
-            <label><input type="checkbox" name="setTime" /> Time sync</label>
-            <label><input type="checkbox" name="filterCycles" /> Filter cycles</label>
-          </fieldset>
-          <fieldset>
-            <legend>Filter Cycles</legend>
-            <div class="field-grid">
-              <label>
-                Cycle 1 Start
-                <input name="filterCycle1Start" type="number" min="0" max="23" />
-              </label>
-              <label>
-                Cycle 1 Duration
-                <input name="filterCycle1Duration" type="number" min="0" max="24" />
-              </label>
-              <label>
-                Cycle 2 Start
-                <input name="filterCycle2Start" type="number" min="0" max="23" />
-              </label>
-              <label>
-                Cycle 2 Duration
-                <input name="filterCycle2Duration" type="number" min="0" max="24" />
+          <button id="syncTime" class="sync-btn" type="button">⟳ Sync Spa Time</button>
+
+          <p class="settings-section-title">Display</p>
+          <div class="card-form">
+            <div class="form-row">
+              <label class="form-row-label" for="backlightTimeout">Backlight Timeout (min)</label>
+              <input class="form-row-input" id="backlightTimeout" name="backlightTimeout" type="number" min="0" max="60" />
+            </div>
+            <div class="form-row">
+              <label class="form-row-label" for="settingsTimezone">Timezone</label>
+              <input class="form-row-input wide" id="settingsTimezone" name="timezone" autocomplete="off" />
+            </div>
+          </div>
+
+          <p class="settings-section-title">Spa Capabilities</p>
+          <div class="card-form">
+            <div class="form-row"><label class="form-row-label" for="capJet1">Jet 1</label><input type="checkbox" id="capJet1" name="jet1" /></div>
+            <div class="form-row"><label class="form-row-label" for="capJet2">Jet 2</label><input type="checkbox" id="capJet2" name="jet2" /></div>
+            <div class="form-row"><label class="form-row-label" for="capLight">Light</label><input type="checkbox" id="capLight" name="light" /></div>
+            <div class="form-row"><label class="form-row-label" for="capHeatMode">Heat Mode</label><input type="checkbox" id="capHeatMode" name="heatMode" /></div>
+            <div class="form-row"><label class="form-row-label" for="capSetTime">Time Sync</label><input type="checkbox" id="capSetTime" name="setTime" /></div>
+            <div class="form-row"><label class="form-row-label" for="capFilterCycles">Filter Cycles</label><input type="checkbox" id="capFilterCycles" name="filterCycles" /></div>
+            <div class="form-row"><label class="form-row-label" for="capBacklight">Backlight</label><input type="checkbox" id="capBacklight" name="backlight" /></div>
+          </div>
+
+          <p class="settings-section-title">Filter 1</p>
+          <div class="card-form">
+            <div class="form-row filter-row">
+              <label class="form-row-label" for="f1StartHour">Start</label>
+              <div class="time-control">
+                <input class="form-row-input compact" id="f1StartHour" name="filterCycle1StartHour12" type="number" min="1" max="12" aria-label="Filter 1 start hour" />
+                <span class="time-separator">:</span>
+                <input class="form-row-input compact" id="f1StartMin" name="filterCycle1StartMinute" type="number" min="0" max="45" step="15" aria-label="Filter 1 start minute" />
+                <select class="form-row-input period" id="f1StartPeriod" name="filterCycle1StartPeriod" aria-label="Filter 1 start period">
+                  <option value="AM">AM</option>
+                  <option value="PM">PM</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row filter-row">
+              <label class="form-row-label" for="f1Dur">Run Time</label>
+              <div class="time-control">
+                <input class="form-row-input compact" id="f1Dur" name="filterCycle1Duration" type="number" min="0" max="24" aria-label="Filter 1 runtime hours" />
+                <span class="time-separator">:</span>
+                <input class="form-row-input compact" id="f1DurMin" name="filterCycle1DurationMinute" type="number" min="0" max="45" step="15" aria-label="Filter 1 runtime minutes" />
+              </div>
+            </div>
+            <div class="form-row filter-row">
+              <span class="form-row-label">End</span>
+              <strong class="filter-end" id="f1EndTime">--</strong>
+            </div>
+          </div>
+          <div class="action-row filter-actions">
+            <button id="readFilter1" class="pill-btn" type="button">Read Filter 1</button>
+            <button id="applyFilter1" class="pill-btn accent" type="button">Apply Filter 1</button>
+          </div>
+
+          <p class="settings-section-title">Filter 2</p>
+          <div class="card-form">
+            <div class="form-row filter-row">
+              <label class="form-row-label" for="f2Enabled">Enabled</label>
+              <label class="switch">
+                <input type="checkbox" id="f2Enabled" name="filterCycle2Enabled" />
+                <span class="switch-slider"></span>
               </label>
             </div>
-            <label><input type="checkbox" name="filterCycle2Enabled" /> Enable cycle 2</label>
-          </fieldset>
-          <label>
-            Backlight Timeout
-            <input name="backlightTimeout" type="number" min="0" max="60" />
-          </label>
-          <label><input type="checkbox" name="authEnabled" /> Require browser password</label>
-          <label>
-            Password
-            <input name="authPassword" type="password" autocomplete="new-password" />
-          </label>
-          <button class="primary" type="submit">Save Settings</button>
+            <div class="form-row filter-row">
+              <label class="form-row-label" for="f2StartHour">Start</label>
+              <div class="time-control">
+                <input class="form-row-input compact" id="f2StartHour" name="filterCycle2StartHour12" type="number" min="1" max="12" aria-label="Filter 2 start hour" />
+                <span class="time-separator">:</span>
+                <input class="form-row-input compact" id="f2StartMin" name="filterCycle2StartMinute" type="number" min="0" max="45" step="15" aria-label="Filter 2 start minute" />
+                <select class="form-row-input period" id="f2StartPeriod" name="filterCycle2StartPeriod" aria-label="Filter 2 start period">
+                  <option value="AM">AM</option>
+                  <option value="PM">PM</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row filter-row">
+              <label class="form-row-label" for="f2Dur">Run Time</label>
+              <div class="time-control">
+                <input class="form-row-input compact" id="f2Dur" name="filterCycle2Duration" type="number" min="0" max="24" aria-label="Filter 2 runtime hours" />
+                <span class="time-separator">:</span>
+                <input class="form-row-input compact" id="f2DurMin" name="filterCycle2DurationMinute" type="number" min="0" max="45" step="15" aria-label="Filter 2 runtime minutes" />
+              </div>
+            </div>
+            <div class="form-row filter-row">
+              <span class="form-row-label">End</span>
+              <strong class="filter-end" id="f2EndTime">--</strong>
+            </div>
+          </div>
+          <div class="action-row filter-actions">
+            <button id="readFilter2" class="pill-btn" type="button">Read Filter 2</button>
+            <button id="applyFilter2" class="pill-btn accent" type="button">Apply Filter 2</button>
+          </div>
+
+          <p class="settings-section-title">Security</p>
+          <div class="card-form">
+            <div class="form-row"><label class="form-row-label" for="authEnabled">Require Password</label><input type="checkbox" id="authEnabled" name="authEnabled" /></div>
+            <div class="form-row"><label class="form-row-label" for="authPassword">Password</label><input class="form-row-input wide" id="authPassword" name="authPassword" type="password" autocomplete="new-password" /></div>
+          </div>
+
+          <button class="save-btn" type="submit">Save Settings</button>
         </form>
       </section>
-      <p id="toast" role="status"></p>
-    </main>
-    <script src="/app.js"></script>
+
+      <!-- Set temperature modal -->
+      <div class="modal-overlay hidden" id="tempModal">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Set temperature">
+          <div class="modal-handle"></div>
+          <h2>Set Temperature</h2>
+          <div class="modal-stepper">
+            <button class="modal-step-btn" id="modalDown" type="button">−</button>
+            <span class="modal-value" id="modalValue">102°</span>
+            <button class="modal-step-btn" id="modalUp" type="button">+</button>
+          </div>
+          <div class="modal-actions">
+            <button class="modal-cancel" id="modalCancel" type="button">Cancel</button>
+            <button class="modal-confirm" id="modalSet" type="button">Set</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="command-overlay hidden" id="commandModal" aria-hidden="true">
+        <div class="command-modal" role="alertdialog" aria-modal="true" aria-labelledby="commandTitle">
+          <div class="command-spinner" id="commandSpinner"></div>
+          <div class="command-success hidden" id="commandSuccess">✓</div>
+          <h2 id="commandTitle">Applying</h2>
+          <pre id="commandDetails"></pre>
+          <button id="commandClose" class="modal-confirm hidden" type="button">Close</button>
+        </div>
+      </div>
+
+      <nav class="bottom-nav">
+        <button class="nav-btn active" data-view="dashboard">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+          </svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-btn" data-view="stats">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+          <span>Stats</span>
+        </button>
+        <button class="nav-btn" data-view="diagnostics">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/><circle cx="12" cy="12" r="1"/>
+          </svg>
+          <span>Capture</span>
+        </button>
+        <button class="nav-btn" data-view="settings">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+    </div>
+
+    <p id="toast" role="status" aria-live="polite"></p>
+    <script src="app.js"></script>
   </body>
 </html>

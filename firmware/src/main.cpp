@@ -18,6 +18,10 @@ DeviceConfig deviceConfig;
 Balboa::SpaController spa;
 WebServerHub *web = nullptr;
 
+const char *configuredTimezone() {
+  return strlen(deviceConfig.timezone) > 0 ? deviceConfig.timezone : DefaultTimezone;
+}
+
 void setupWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(AppConfig::Hostname);
@@ -43,10 +47,11 @@ void setupWifi() {
 }
 
 void setupTime() {
-  setenv("TZ", deviceConfig.timezone, 1);
+  const char *timezone = configuredTimezone();
+  setenv("TZ", timezone, 1);
   tzset();
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  Serial.printf("[time] timezone=%s\n", deviceConfig.timezone);
+  configTzTime(timezone, "pool.ntp.org", "time.nist.gov");
+  Serial.printf("[time] timezone=%s\n", timezone);
 }
 
 void setupOta() {

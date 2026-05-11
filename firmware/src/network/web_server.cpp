@@ -7,6 +7,7 @@
 #include <LittleFS.h>
 
 #include "config.h"
+#include "storage/config_model.h"
 
 WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config)
     : spa_(spa), store_(store), config_(config) {}
@@ -38,7 +39,9 @@ void WebServerHub::begin() {
       return;
     }
 
-    Balboa::CommandResult result = spa_.handleCommand(doc.as<JsonVariantConst>());
+    JsonVariantConst command = doc.as<JsonVariantConst>();
+    Balboa::CommandResult result = spa_.handleCommand(command);
+    cacheAcceptedCommand(command, result);
     client->text(commandResultJson(result));
   });
   server_.addHandler(&ws_);
@@ -50,7 +53,16 @@ void WebServerHub::begin() {
 
 void WebServerHub::loop() {
   ws_.cleanupClients();
-  if (spa_.consumeStateChanged() && millis() - lastBroadcastMs_ > AppConfig::StateBroadcastMinMs) {
+  Balboa::FilterCycleCache filter;
+  if (spa_.consumeFilterCycleCache(filter)) {
+    persistFilterCycleCache(filter);
+  }
+  stateBroadcastPending_ = spa_.consumeStateChanged() || stateBroadcastPending_;
+  const uint32_t now = millis();
+  if (stateBroadcastPending_ && now - lastBroadcastMs_ > AppConfig::StateBroadcastMinMs) {
+    broadcastState();
+    stateBroadcastPending_ = false;
+  } else if (!stateBroadcastPending_ && now - lastBroadcastMs_ > 1000) {
     broadcastState();
   }
 }
@@ -63,6 +75,42 @@ void WebServerHub::broadcastState() {
 
 void WebServerHub::setupRoutes() {
   server_.on("/api/state", HTTP_GET, [this](AsyncWebServerRequest *request) { sendState(request); });
+  server_.on("/api/debug-log", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    if (!isAuthorized(request)) {
+      return request->requestAuthentication();
+    }
+    request->send(200, "text/plain", spa_.debugLogText());
+  });
+  server_.on("/api/debug-log", HTTP_DELETE, [this](AsyncWebServerRequest *request) {
+    if (!isAuthorized(request)) {
+      return request->requestAuthentication();
+    }
+    spa_.clearDebugLog();
+    request->send(204);
+  });
+  server_.on("/api/status-capture", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    if (!isAuthorized(request)) {
+      return request->requestAuthentication();
+    }
+    request->send(200, "text/plain", spa_.statusCaptureText());
+  });
+  server_.on("/api/status-capture", HTTP_DELETE, [this](AsyncWebServerRequest *request) {
+    if (!isAuthorized(request)) {
+      return request->requestAuthentication();
+    }
+    spa_.clearStatusCapture();
+    request->send(204);
+  });
+  server_.on("/api/command-logs", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    if (!isAuthorized(request)) {
+      return request->requestAuthentication();
+    }
+    if (request->hasParam("file")) {
+      sendCommandLogFile(request);
+    } else {
+      sendCommandLogList(request);
+    }
+  });
 
   server_.on(
       "/api/cmd", HTTP_POST,
@@ -105,8 +153,10 @@ void WebServerHub::setupRoutes() {
           return;
         }
         config_ = next;
-        setenv("TZ", config_.timezone, 1);
+        const char *timezone = strlen(config_.timezone) > 0 ? config_.timezone : DefaultTimezone;
+        setenv("TZ", timezone, 1);
         tzset();
+        configTzTime(timezone, "pool.ntp.org", "time.nist.gov");
         applyConfigToSpa();
         store_.saveConfig(config_);
         sendConfig(request);
@@ -131,7 +181,9 @@ void WebServerHub::handleCommandBody(AsyncWebServerRequest *request, uint8_t *da
     request->send(400, "application/json", "{\"status\":\"invalid_value\",\"message\":\"invalid json\"}");
     return;
   }
-  Balboa::CommandResult result = spa_.handleCommand(doc.as<JsonVariantConst>());
+  JsonVariantConst command = doc.as<JsonVariantConst>();
+  Balboa::CommandResult result = spa_.handleCommand(command);
+  cacheAcceptedCommand(command, result);
   sendCommandResult(request, result);
 }
 
@@ -140,6 +192,21 @@ bool WebServerHub::isAuthorized(AsyncWebServerRequest *request) const {
     return true;
   }
   return request->authenticate("admin", config_.authPassword);
+}
+
+bool WebServerHub::isValidCommandLogName(const String &name) const {
+  if (name.length() == 0 || name.length() > 80 || !name.endsWith(".log")) {
+    return false;
+  }
+  for (size_t i = 0; i < name.length(); ++i) {
+    const char c = name[i];
+    const bool valid = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                       c == '-' || c == '_' || c == '.';
+    if (!valid) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void WebServerHub::sendState(AsyncWebServerRequest *request) {
@@ -162,9 +229,100 @@ void WebServerHub::sendConfig(AsyncWebServerRequest *request) {
   request->send(200, "application/json", body);
 }
 
+void WebServerHub::sendCommandLogList(AsyncWebServerRequest *request) {
+  JsonDocument doc;
+  JsonArray logs = doc["logs"].to<JsonArray>();
+  if (LittleFS.exists("/command-logs")) {
+    File root = LittleFS.open("/command-logs");
+    File file = root.openNextFile();
+    while (file) {
+      if (!file.isDirectory()) {
+        JsonObject item = logs.add<JsonObject>();
+        String name = file.name();
+        const int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+          name = name.substring(slash + 1);
+        }
+        item["name"] = name;
+        item["size"] = file.size();
+      }
+      file = root.openNextFile();
+    }
+  }
+  String body;
+  serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
+
+void WebServerHub::sendCommandLogFile(AsyncWebServerRequest *request) {
+  const String name = request->getParam("file")->value();
+  if (!isValidCommandLogName(name)) {
+    request->send(400, "application/json", "{\"status\":\"invalid_value\",\"message\":\"invalid log name\"}");
+    return;
+  }
+  const String path = String("/command-logs/") + name;
+  if (!LittleFS.exists(path)) {
+    request->send(404, "application/json", "{\"status\":\"not_found\"}");
+    return;
+  }
+  request->send(LittleFS, path, "text/plain");
+}
+
 void WebServerHub::sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result) {
   const int code = result.status == Balboa::CommandStatus::Accepted ? 202 : 400;
   request->send(code, "application/json", commandResultJson(result));
+}
+
+void WebServerHub::cacheAcceptedCommand(JsonVariantConst command, const Balboa::CommandResult &result) {
+  if (result.status != Balboa::CommandStatus::Accepted) {
+    return;
+  }
+
+  const char *action = command["action"] | "";
+  if (strcmp(action, "setFilter1") != 0 && strcmp(action, "setFilter2") != 0) {
+    return;
+  }
+
+  if (strcmp(action, "setFilter1") == 0) {
+    config_.filterCycle1Start = static_cast<uint8_t>(command["startHour"] | 0);
+    config_.filterCycle1StartMinute = static_cast<uint8_t>(command["startMinute"] | 0);
+    config_.filterCycle1Duration = static_cast<uint8_t>(command["durationHour"] | 0);
+    config_.filterCycle1DurationMinute = static_cast<uint8_t>(command["durationMinute"] | 0);
+  } else {
+    config_.filterCycle2Enabled = command["enabled"] | false;
+    config_.filterCycle2Start = static_cast<uint8_t>(command["startHour"] | 0);
+    config_.filterCycle2StartMinute = static_cast<uint8_t>(command["startMinute"] | 0);
+    config_.filterCycle2Duration = static_cast<uint8_t>(command["durationHour"] | 0);
+    config_.filterCycle2DurationMinute = static_cast<uint8_t>(command["durationMinute"] | 0);
+  }
+  applyConfigToSpa();
+  store_.saveConfig(config_);
+  stateBroadcastPending_ = true;
+}
+
+void WebServerHub::persistFilterCycleCache(const Balboa::FilterCycleCache &cache) {
+  if (cache.startHour > 23 || cache.startMinute > 45 || cache.startMinute % 15 != 0 ||
+      cache.durationHour > 24 || cache.durationMinute > 45 || cache.durationMinute % 15 != 0) {
+    Serial.printf("[web] ignoring invalid filter%u cache start=%u:%02u duration=%u:%02u\n",
+                  cache.cycle, cache.startHour, cache.startMinute, cache.durationHour, cache.durationMinute);
+    return;
+  }
+  if (cache.cycle == 1) {
+    config_.filterCycle1Start = cache.startHour;
+    config_.filterCycle1StartMinute = cache.startMinute;
+    config_.filterCycle1Duration = cache.durationHour;
+    config_.filterCycle1DurationMinute = cache.durationMinute;
+  } else if (cache.cycle == 2) {
+    config_.filterCycle2Enabled = cache.enabled;
+    config_.filterCycle2Start = cache.startHour;
+    config_.filterCycle2StartMinute = cache.startMinute;
+    config_.filterCycle2Duration = cache.durationHour;
+    config_.filterCycle2DurationMinute = cache.durationMinute;
+  } else {
+    return;
+  }
+  store_.saveConfig(config_);
+  stateBroadcastPending_ = true;
 }
 
 String WebServerHub::stateJson() {
@@ -199,7 +357,9 @@ void WebServerHub::applyConfigToSpa() {
   caps.filterCycles = config_.filterCycles;
   caps.backlight = config_.backlight;
   spa_.setCapabilities(caps);
-  spa_.setConfiguredFilterCycles(config_.filterCycle1Start, config_.filterCycle1Duration,
+  spa_.setConfiguredFilterCycles(config_.filterCycle1Start, config_.filterCycle1StartMinute,
+                                 config_.filterCycle1Duration, config_.filterCycle1DurationMinute,
                                  config_.filterCycle2Enabled, config_.filterCycle2Start,
-                                 config_.filterCycle2Duration);
+                                 config_.filterCycle2StartMinute, config_.filterCycle2Duration,
+                                 config_.filterCycle2DurationMinute);
 }

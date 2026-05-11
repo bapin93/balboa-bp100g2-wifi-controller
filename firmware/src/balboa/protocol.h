@@ -31,6 +31,11 @@ enum class ParseError {
 struct ParseResult {
   std::optional<Frame> frame;
   ParseError error = ParseError::None;
+  std::vector<uint8_t> wireBytes;
+  size_t reportedLength = 0;
+  size_t actualLength = 0;
+  uint8_t expectedCrc = 0;
+  uint8_t actualCrc = 0;
 };
 
 class FrameParser {

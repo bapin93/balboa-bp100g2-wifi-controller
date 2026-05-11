@@ -6,7 +6,7 @@
 namespace {
 
 bool copyString(const char *value, char *target, size_t capacity) {
-  if (!value || strlen(value) >= capacity) {
+  if (!value || strlen(value) == 0 || strlen(value) >= capacity) {
     return false;
   }
   snprintf(target, capacity, "%s", value);
@@ -45,6 +45,19 @@ bool setDurationIfPresent(JsonVariantConst input, const char *key, uint8_t &targ
   return true;
 }
 
+bool setQuarterMinuteIfPresent(JsonVariantConst input, const char *key, uint8_t &target, const char **error) {
+  if (!input[key].is<int>()) {
+    return true;
+  }
+  const int value = input[key].as<int>();
+  if (value < 0 || value > 45 || value % 15 != 0) {
+    *error = "filter minutes must be 0, 15, 30, or 45";
+    return false;
+  }
+  target = static_cast<uint8_t>(value);
+  return true;
+}
+
 }  // namespace
 
 bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, DeviceConfig &next, const char **error) {
@@ -57,7 +70,7 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
 
   if (input["timezone"].is<const char *>()) {
     if (!copyString(input["timezone"], next.timezone, sizeof(next.timezone))) {
-      *error = "timezone is too long";
+      *error = "timezone is required and must fit";
       return false;
     }
   }
@@ -88,14 +101,26 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
     if (!setHourIfPresent(filters, "cycle1Start", next.filterCycle1Start, error)) {
       return false;
     }
+    if (!setQuarterMinuteIfPresent(filters, "cycle1StartMinute", next.filterCycle1StartMinute, error)) {
+      return false;
+    }
     if (!setDurationIfPresent(filters, "cycle1Duration", next.filterCycle1Duration, error)) {
+      return false;
+    }
+    if (!setQuarterMinuteIfPresent(filters, "cycle1DurationMinute", next.filterCycle1DurationMinute, error)) {
       return false;
     }
     setBoolIfPresent(filters, "cycle2Enabled", next.filterCycle2Enabled);
     if (!setHourIfPresent(filters, "cycle2Start", next.filterCycle2Start, error)) {
       return false;
     }
+    if (!setQuarterMinuteIfPresent(filters, "cycle2StartMinute", next.filterCycle2StartMinute, error)) {
+      return false;
+    }
     if (!setDurationIfPresent(filters, "cycle2Duration", next.filterCycle2Duration, error)) {
+      return false;
+    }
+    if (!setQuarterMinuteIfPresent(filters, "cycle2DurationMinute", next.filterCycle2DurationMinute, error)) {
       return false;
     }
   }
@@ -130,10 +155,14 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
 
   JsonObject filters = out["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = config.filterCycle1Start;
+  filters["cycle1StartMinute"] = config.filterCycle1StartMinute;
   filters["cycle1Duration"] = config.filterCycle1Duration;
+  filters["cycle1DurationMinute"] = config.filterCycle1DurationMinute;
   filters["cycle2Enabled"] = config.filterCycle2Enabled;
   filters["cycle2Start"] = config.filterCycle2Start;
+  filters["cycle2StartMinute"] = config.filterCycle2StartMinute;
   filters["cycle2Duration"] = config.filterCycle2Duration;
+  filters["cycle2DurationMinute"] = config.filterCycle2DurationMinute;
 }
 
 void configFromJson(JsonVariantConst input, DeviceConfig &config) {
