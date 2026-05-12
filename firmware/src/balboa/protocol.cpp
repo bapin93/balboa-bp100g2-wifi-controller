@@ -159,12 +159,39 @@ std::vector<uint8_t> buildPanelCommand(uint8_t buttonCode) {
   return encodeFrame(frame);
 }
 
+std::vector<uint8_t> buildToggleItemCommand(uint8_t itemCode) {
+  Frame frame;
+  frame.source = PanelSource;
+  frame.target = PanelTarget;
+  frame.type = MessagePanelCommand;
+  frame.payload = {itemCode, 0x00};
+  return encodeFrame(frame);
+}
+
+std::vector<uint8_t> buildSetTemperatureCommand(uint8_t temperature) {
+  Frame frame;
+  frame.source = PanelSource;
+  frame.target = PanelTarget;
+  frame.type = MessageSetTemperature;
+  frame.payload = {temperature};
+  return encodeFrame(frame);
+}
+
 std::vector<uint8_t> buildSetTimeCommand(uint8_t hour, uint8_t minute) {
   Frame frame;
   frame.source = PanelSource;
   frame.target = PanelTarget;
   frame.type = MessageSetTime;
   frame.payload = {hour, minute};
+  return encodeFrame(frame);
+}
+
+std::vector<uint8_t> buildFilterCyclesRequest() {
+  Frame frame;
+  frame.source = PanelSource;
+  frame.target = PanelTarget;
+  frame.type = MessageSettingsRequest;
+  frame.payload = {0x01, 0x00, 0x00};
   return encodeFrame(frame);
 }
 

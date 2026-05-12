@@ -301,6 +301,28 @@ void WebServerHub::cacheAcceptedCommand(JsonVariantConst command, const Balboa::
 }
 
 void WebServerHub::persistFilterCycleCache(const Balboa::FilterCycleCache &cache) {
+  if (cache.all) {
+    if (cache.cycle1Start > 23 || cache.cycle1StartMinute > 45 || cache.cycle1StartMinute % 15 != 0 ||
+        cache.cycle1Duration > 24 || cache.cycle1DurationMinute > 45 || cache.cycle1DurationMinute % 15 != 0 ||
+        cache.cycle2Start > 23 || cache.cycle2StartMinute > 45 || cache.cycle2StartMinute % 15 != 0 ||
+        cache.cycle2Duration > 24 || cache.cycle2DurationMinute > 45 || cache.cycle2DurationMinute % 15 != 0) {
+      Serial.println("[web] ignoring invalid filter cycle cache");
+      return;
+    }
+    config_.filterCycle1Start = cache.cycle1Start;
+    config_.filterCycle1StartMinute = cache.cycle1StartMinute;
+    config_.filterCycle1Duration = cache.cycle1Duration;
+    config_.filterCycle1DurationMinute = cache.cycle1DurationMinute;
+    config_.filterCycle2Enabled = cache.cycle2Enabled;
+    config_.filterCycle2Start = cache.cycle2Start;
+    config_.filterCycle2StartMinute = cache.cycle2StartMinute;
+    config_.filterCycle2Duration = cache.cycle2Duration;
+    config_.filterCycle2DurationMinute = cache.cycle2DurationMinute;
+    store_.saveConfig(config_);
+    stateBroadcastPending_ = true;
+    return;
+  }
+
   if (cache.startHour > 23 || cache.startMinute > 45 || cache.startMinute % 15 != 0 ||
       cache.durationHour > 24 || cache.durationMinute > 45 || cache.durationMinute % 15 != 0) {
     Serial.printf("[web] ignoring invalid filter%u cache start=%u:%02u duration=%u:%02u\n",

@@ -44,6 +44,7 @@ struct SpaState {
   uint8_t filterCycle2Dur = 0;
   uint8_t filterCycle2DurMinute = 0;
   bool filterCycle2Enabled = false;
+  bool filterCyclesValid = false;
   uint8_t backlightTimeout = 0;
   uint8_t hour = 0;
   uint8_t minute = 0;
@@ -65,12 +66,22 @@ struct CommandResult {
 };
 
 struct FilterCycleCache {
+  bool all = false;
   uint8_t cycle = 1;
   bool enabled = true;
   uint8_t startHour = 0;
   uint8_t startMinute = 0;
   uint8_t durationHour = 0;
   uint8_t durationMinute = 0;
+  bool cycle2Enabled = false;
+  uint8_t cycle1Start = 0;
+  uint8_t cycle1StartMinute = 0;
+  uint8_t cycle1Duration = 0;
+  uint8_t cycle1DurationMinute = 0;
+  uint8_t cycle2Start = 0;
+  uint8_t cycle2StartMinute = 0;
+  uint8_t cycle2Duration = 0;
+  uint8_t cycle2DurationMinute = 0;
 };
 
 class SpaController {
@@ -119,6 +130,7 @@ class SpaController {
   CommandResult handleBenchCommand(const char *action, JsonVariantConst command);
   void handleFrame(const Frame &frame);
   bool decodeStatusFrame(const Frame &frame);
+  bool decodeFilterCyclesResponse(const Frame &frame);
   CommandResult enqueue(const char *label, std::vector<uint8_t> frame, uint32_t minDelayMs = 550);
   CommandResult enqueueButton(const char *label, uint8_t buttonCode, uint32_t minDelayMs = 550);
   void transmit(const std::vector<uint8_t> &frame);

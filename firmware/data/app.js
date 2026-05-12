@@ -4,10 +4,8 @@ const state = {
   ws: null,
   modalTemp: null,
   toastTimer: null,
-  filter1ReadPending: false,
-  filter1ReadSeenActive: false,
-  filter2ReadPending: false,
-  filter2ReadSeenActive: false,
+  filterCycleRefreshStarted: false,
+  filterCycleRefreshPending: false,
   capturePollTimer: null,
   commandModalOpen: false,
   commandModalStatus: "idle",
@@ -205,6 +203,10 @@ function renderState(data) {
     filters.cycle2DurationMinute,
     filters.cycle2Enabled,
   );
+  if (state.filterCycleRefreshPending && filters.valid === true) {
+    applyFilterFields(filters);
+    state.filterCycleRefreshPending = false;
+  }
 
   const caps = data.capabilities || {};
   $("#syncTime").hidden = caps.setTime === false;
@@ -216,25 +218,6 @@ function renderState(data) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
-
-  if (state.filter1ReadPending) {
-    if (data.filterProgramActive === true) {
-      state.filter1ReadSeenActive = true;
-    } else if (state.filter1ReadSeenActive && data.filterProgramActive === false) {
-      state.filter1ReadPending = false;
-      state.filter1ReadSeenActive = false;
-      loadConfig().catch((error) => showToast(error.message));
-    }
-  }
-  if (state.filter2ReadPending) {
-    if (data.filterProgramActive === true) {
-      state.filter2ReadSeenActive = true;
-    } else if (state.filter2ReadSeenActive && data.filterProgramActive === false) {
-      state.filter2ReadPending = false;
-      state.filter2ReadSeenActive = false;
-      loadConfig().catch((error) => showToast(error.message));
-    }
-  }
 
   if (data.statusCaptureActive && !state.capturePollTimer) {
     startCapturePolling();
@@ -328,10 +311,6 @@ function commandPresentation(command) {
       return { title: "Setting Filter 1", details: filterSummary(command) };
     case "setFilter2":
       return { title: "Setting Filter 2", details: filterSummary(command) };
-    case "readFilter1":
-      return { title: "Reading Filter 1", details: "Reading panel values" };
-    case "readFilter2":
-      return { title: "Reading Filter 2", details: "Reading panel values" };
     case "jet1":
       return { title: "Applying Jet 1", details: `Current: ${jetLabel(state.data?.jet1, state.data?.jet1Speed)}` };
     case "jet2":
@@ -355,17 +334,16 @@ function commandPresentation(command) {
 
 function commandWaitType(command) {
   if (command.action === "setTemp") {
-    const current = Math.round(state.data?.setTemp ?? NaN);
-    return current === command.value ? null : "targetTemp";
+    return null;
   }
-  if (["setFilter1", "setFilter2", "readFilter1", "readFilter2"].includes(command.action)) {
+  if (["setFilter1", "setFilter2"].includes(command.action)) {
     return "filter";
   }
   return null;
 }
 
 function usesBlockingCommandModal(command) {
-  return ["setTemp", "setFilter1", "setFilter2", "readFilter1", "readFilter2"].includes(command.action);
+  return ["setTemp", "setFilter1", "setFilter2"].includes(command.action);
 }
 
 function waitForCommandCompletion(type) {
@@ -544,7 +522,11 @@ async function loadConfig() {
   ["jet1", "jet2", "light", "heatMode", "setTime", "filterCycles", "backlight"].forEach((key) => {
     field(form, key).checked = !!caps[key];
   });
-  const filters = state.config.filterCycles || {};
+  applyFilterFields(state.config.filterCycles || {});
+}
+
+function applyFilterFields(filters) {
+  const form = $("#settingsForm");
   const filter1Start = toClock12(filters.cycle1Start ?? 8);
   field(form, "filterCycle1StartHour12").value = filter1Start.hour;
   field(form, "filterCycle1StartPeriod").value = filter1Start.period;
@@ -560,6 +542,26 @@ async function loadConfig() {
   field(form, "filterCycle2Duration").value = filters.cycle2Duration ?? 0;
   field(form, "filterCycle2DurationMinute").value = filters.cycle2DurationMinute ?? 0;
   updateFilter2EndTime();
+}
+
+async function refreshFilterCyclesFromSpa() {
+  if (state.filterCycleRefreshStarted) {
+    return;
+  }
+  state.filterCycleRefreshStarted = true;
+  state.filterCycleRefreshPending = true;
+  try {
+    await requestJson("/api/cmd", {
+      method: "POST",
+      body: JSON.stringify({ action: "readFilterCycles" }),
+    });
+    [700, 1600, 3000].forEach((delay) => {
+      setTimeout(() => loadConfig().catch((error) => showToast(error.message)), delay);
+    });
+  } catch (error) {
+    state.filterCycleRefreshPending = false;
+    console.warn("[bp100g2] filter cycle refresh failed", error);
+  }
 }
 
 function setupEvents() {
@@ -649,20 +651,6 @@ function setupEvents() {
 
   $("#refreshCommandLogs").addEventListener("click", () => {
     loadCommandLogs().catch((error) => showToast(error.message));
-  });
-
-  $("#readFilter1").addEventListener("click", async () => {
-    const result = await sendCommand({ action: "readFilter1" });
-    if (result) {
-      await loadConfig();
-    }
-  });
-
-  $("#readFilter2").addEventListener("click", async () => {
-    const result = await sendCommand({ action: "readFilter2" });
-    if (result) {
-      await loadConfig();
-    }
   });
 
   [
@@ -761,6 +749,7 @@ function setupEvents() {
       field(form, "authPassword").value = "";
       showToast("Settings saved");
       await loadConfig();
+      await refreshFilterCyclesFromSpa();
     } catch (error) {
       showToast(error.message);
     } finally {
@@ -771,7 +760,9 @@ function setupEvents() {
 
 setupEvents();
 connectWs();
-loadConfig().catch((error) => showToast(error.message));
+loadConfig()
+  .then(refreshFilterCyclesFromSpa)
+  .catch((error) => showToast(error.message));
 loadCommandLogs().catch((error) => showToast(error.message));
 
 if ("serviceWorker" in navigator) {

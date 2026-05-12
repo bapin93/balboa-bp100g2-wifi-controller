@@ -11,7 +11,10 @@ namespace Balboa {
 constexpr uint8_t FrameDelimiter = 0x7e;
 constexpr uint8_t MessageStatusUpdate = 0x13;
 constexpr uint8_t MessagePanelCommand = 0x11;
+constexpr uint8_t MessageSetTemperature = 0x20;
 constexpr uint8_t MessageSetTime = 0x21;
+constexpr uint8_t MessageSettingsRequest = 0x22;
+constexpr uint8_t MessageFilterCyclesResponse = 0x23;
 
 struct Frame {
   uint8_t source = 0xff;
@@ -55,7 +58,10 @@ std::vector<uint8_t> encodeFrame(const Frame &frame);
 ParseResult decodeFrameBytes(const std::vector<uint8_t> &wireBytes);
 
 std::vector<uint8_t> buildPanelCommand(uint8_t buttonCode);
+std::vector<uint8_t> buildToggleItemCommand(uint8_t itemCode);
+std::vector<uint8_t> buildSetTemperatureCommand(uint8_t temperature);
 std::vector<uint8_t> buildSetTimeCommand(uint8_t hour, uint8_t minute);
+std::vector<uint8_t> buildFilterCyclesRequest();
 
 std::string bytesToHex(const std::vector<uint8_t> &bytes);
 const char *parseErrorName(ParseError error);

@@ -58,6 +58,17 @@ void test_encode_round_trips_panel_command() {
   TEST_ASSERT_EQUAL_HEX8(0x00, result.frame->payload[1]);
 }
 
+void test_encode_round_trips_toggle_item_command() {
+  std::vector<uint8_t> wire = buildToggleItemCommand(0x11);
+  ParseResult result = decodeFrameBytes(wire);
+  TEST_ASSERT_EQUAL(ParseError::None, result.error);
+  TEST_ASSERT_TRUE(result.frame.has_value());
+  TEST_ASSERT_EQUAL_HEX8(MessagePanelCommand, result.frame->type);
+  TEST_ASSERT_EQUAL_UINT8(2, result.frame->payload.size());
+  TEST_ASSERT_EQUAL_HEX8(0x11, result.frame->payload[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x00, result.frame->payload[1]);
+}
+
 void test_encode_captured_temperature_commands() {
   const std::vector<uint8_t> warm = buildPanelCommand(0x01);
   const std::vector<uint8_t> capturedWarmCommand = {0x7e, 0x07, 0x10, 0xbf, 0x11, 0x01, 0x00, 0x2b, 0x7e};
@@ -72,6 +83,32 @@ void test_encode_set_time_command_uses_panel_addressing() {
   const std::vector<uint8_t> wire = buildSetTimeCommand(22, 53);
   const std::vector<uint8_t> expected = {0x7e, 0x07, 0x10, 0xbf, 0x21, 0x16, 0x35, 0x7d, 0x7e};
   TEST_ASSERT_EQUAL_UINT8_ARRAY(expected.data(), wire.data(), expected.size());
+}
+
+void test_encode_set_temperature_command_uses_panel_addressing() {
+  const std::vector<uint8_t> wire = buildSetTemperatureCommand(100);
+  ParseResult result = decodeFrameBytes(wire);
+  TEST_ASSERT_EQUAL(ParseError::None, result.error);
+  TEST_ASSERT_TRUE(result.frame.has_value());
+  TEST_ASSERT_EQUAL_HEX8(0x10, result.frame->source);
+  TEST_ASSERT_EQUAL_HEX8(0xbf, result.frame->target);
+  TEST_ASSERT_EQUAL_HEX8(MessageSetTemperature, result.frame->type);
+  TEST_ASSERT_EQUAL_UINT8(1, result.frame->payload.size());
+  TEST_ASSERT_EQUAL_UINT8(100, result.frame->payload[0]);
+}
+
+void test_encode_filter_cycles_request_uses_panel_addressing() {
+  const std::vector<uint8_t> wire = buildFilterCyclesRequest();
+  ParseResult result = decodeFrameBytes(wire);
+  TEST_ASSERT_EQUAL(ParseError::None, result.error);
+  TEST_ASSERT_TRUE(result.frame.has_value());
+  TEST_ASSERT_EQUAL_HEX8(0x10, result.frame->source);
+  TEST_ASSERT_EQUAL_HEX8(0xbf, result.frame->target);
+  TEST_ASSERT_EQUAL_HEX8(MessageSettingsRequest, result.frame->type);
+  TEST_ASSERT_EQUAL_UINT8(3, result.frame->payload.size());
+  TEST_ASSERT_EQUAL_HEX8(0x01, result.frame->payload[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x00, result.frame->payload[1]);
+  TEST_ASSERT_EQUAL_HEX8(0x00, result.frame->payload[2]);
 }
 
 void test_stream_parser_emits_complete_frame() {
@@ -95,8 +132,11 @@ int main(int argc, char **argv) {
   RUN_TEST(test_decode_known_status_frame_fixture);
   RUN_TEST(test_decode_captured_panel_frames);
   RUN_TEST(test_encode_round_trips_panel_command);
+  RUN_TEST(test_encode_round_trips_toggle_item_command);
   RUN_TEST(test_encode_captured_temperature_commands);
   RUN_TEST(test_encode_set_time_command_uses_panel_addressing);
+  RUN_TEST(test_encode_set_temperature_command_uses_panel_addressing);
+  RUN_TEST(test_encode_filter_cycles_request_uses_panel_addressing);
   RUN_TEST(test_stream_parser_emits_complete_frame);
   return UNITY_END();
 }

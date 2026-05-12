@@ -20,6 +20,7 @@ constexpr uint8_t ButtonJet1 = 0x04;
 constexpr uint8_t ButtonJet2 = 0x05;
 constexpr uint8_t ButtonLight = 0x91;
 constexpr uint8_t ButtonHeatMode = 0x51;
+constexpr uint8_t ToggleLight1 = 0x11;
 constexpr uint32_t FilterProgramDebugDelayMs = 650;
 constexpr uint32_t FilterProgramEntryDelayMs = 650;
 constexpr uint8_t FilterProgramMaxSteps = 80;
@@ -247,6 +248,7 @@ void SpaController::writeStateJson(JsonObject out) const {
   filters["cycle2StartMinute"] = state_.filterCycle2StartMinute;
   filters["cycle2Duration"] = state_.filterCycle2Dur;
   filters["cycle2DurationMinute"] = state_.filterCycle2DurMinute;
+  filters["valid"] = state_.filterCyclesValid;
   char timeBuffer[6];
   snprintf(timeBuffer, sizeof(timeBuffer), "%02u:%02u", state_.hour, state_.minute);
   out["spaTime"] = timeBuffer;
@@ -474,61 +476,21 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
   }
 
   if (strcmp(action, "setTemp") == 0) {
-    if (!hasFreshState(millis()) || !isFiniteTemp(state_.setTemp)) {
-      return {CommandStatus::SpaStateUnavailable, "current set temperature is not known yet"};
-    }
     const int value = command["value"] | -1;
     if (value < 50 || value > 104) {
       return {CommandStatus::InvalidValue, "set temperature must be 50-104 F"};
     }
-    const int current = static_cast<int>(roundf(state_.setTemp));
-    if (value == current) {
-      targetTempActive_ = false;
-      targetTempWaitingForStatus_ = false;
-      targetTempPhase_ = TargetTempIdle;
-      stateChanged_ = true;
-      return {CommandStatus::Accepted, "already at requested set temperature"};
-    }
-    targetSetTemp_ = value;
-    targetTempActive_ = true;
+    targetTempActive_ = false;
     targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempActivateFlash;
+    targetTempPhase_ = TargetTempIdle;
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
     filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     stateChanged_ = true;
-    Serial.printf("[balboa] target temp=%d current=%d\n", targetSetTemp_, current);
-    return {CommandStatus::Accepted, "target temperature command accepted"};
-  }
-
-  if (strcmp(action, "readFilter1") == 0 || strcmp(action, "readFilter2") == 0) {
-    const bool isFilter2 = strcmp(action, "readFilter2") == 0;
-    if (filterProgramActive_) {
-      return {CommandStatus::QueueFull, "filter programming already active"};
-    }
-    if (!queue_.empty()) {
-      return {CommandStatus::QueueFull, "command queue must be empty before filter read"};
-    }
-
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    filterProgramCycle_ = isFilter2 ? 2 : 1;
-    filterProgramEnabled_ = true;
-    filterProgramReadOnly_ = true;
-    filterProgramActive_ = true;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramHomeLightSent_ = false;
-    filterProgramPhase_ = FilterProgramStartTempFlash;
-    filterProgramStepCount_ = 0;
-    stateChanged_ = true;
-    startCommandTrace(isFilter2 ? "ReadFilter2" : "ReadFilter1");
-    logDebug("[balboa] filter%u read started", filterProgramCycle_);
-    return {CommandStatus::Accepted, isFilter2 ? "filter 2 read started" : "filter 1 read started"};
+    Serial.printf("[balboa] direct target temp=%d\n", value);
+    return enqueue("set_temp_direct", buildSetTemperatureCommand(static_cast<uint8_t>(value)));
   }
 
   if (strcmp(action, "setFilter1") == 0 || strcmp(action, "setFilter2") == 0) {
@@ -577,6 +539,10 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     return {CommandStatus::Accepted, isFilter2 ? "filter 2 programming started" : "filter 1 programming started"};
   }
 
+  if (strcmp(action, "readFilterCycles") == 0) {
+    return enqueue("read_filter_cycles", buildFilterCyclesRequest());
+  }
+
   if (strcmp(action, "jet1") == 0) {
     return capabilities_.jet1 ? enqueueButton("jet1", ButtonJet1)
                               : CommandResult{CommandStatus::UnsupportedFeature, "jet1 unsupported"};
@@ -586,7 +552,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
                               : CommandResult{CommandStatus::UnsupportedFeature, "jet2 unsupported"};
   }
   if (strcmp(action, "light") == 0) {
-    return capabilities_.light ? enqueueButton("light", ButtonLight)
+    return capabilities_.light ? enqueue("light_toggle_item", buildToggleItemCommand(ToggleLight1))
                                : CommandResult{CommandStatus::UnsupportedFeature, "light unsupported"};
   }
   if (strcmp(action, "heatMode") == 0) {
@@ -723,34 +689,22 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
                   state_.filterCycle1StartMinute, state_.filterCycle1Dur, state_.filterCycle1DurMinute);
     return {CommandStatus::Accepted, "bench filter 1 updated"};
   }
-  if (strcmp(action, "readFilter1") == 0) {
-    filterCycleCache_.cycle = 1;
-    filterCycleCache_.enabled = true;
-    filterCycleCache_.startHour = state_.filterCycle1Start;
-    filterCycleCache_.startMinute = state_.filterCycle1StartMinute;
-    filterCycleCache_.durationHour = state_.filterCycle1Dur;
-    filterCycleCache_.durationMinute = state_.filterCycle1DurMinute;
+  if (strcmp(action, "readFilterCycles") == 0) {
+    filterCycleCache_.all = true;
+    filterCycleCache_.cycle1Start = state_.filterCycle1Start;
+    filterCycleCache_.cycle1StartMinute = state_.filterCycle1StartMinute;
+    filterCycleCache_.cycle1Duration = state_.filterCycle1Dur;
+    filterCycleCache_.cycle1DurationMinute = state_.filterCycle1DurMinute;
+    filterCycleCache_.cycle2Enabled = state_.filterCycle2Enabled;
+    filterCycleCache_.cycle2Start = state_.filterCycle2Start;
+    filterCycleCache_.cycle2StartMinute = state_.filterCycle2StartMinute;
+    filterCycleCache_.cycle2Duration = state_.filterCycle2Dur;
+    filterCycleCache_.cycle2DurationMinute = state_.filterCycle2DurMinute;
     filterCycleCachePending_ = true;
+    state_.filterCyclesValid = true;
     stateChanged_ = true;
-    Serial.printf("[bench] filter1 read start=%u:%02u duration=%u:%02u\n", filterCycleCache_.startHour,
-                  filterCycleCache_.startMinute, filterCycleCache_.durationHour,
-                  filterCycleCache_.durationMinute);
-    return {CommandStatus::Accepted, "bench filter 1 read"};
-  }
-  if (strcmp(action, "readFilter2") == 0) {
-    filterCycleCache_.cycle = 2;
-    filterCycleCache_.enabled = state_.filterCycle2Enabled;
-    filterCycleCache_.startHour = state_.filterCycle2Start;
-    filterCycleCache_.startMinute = state_.filterCycle2StartMinute;
-    filterCycleCache_.durationHour = state_.filterCycle2Dur;
-    filterCycleCache_.durationMinute = state_.filterCycle2DurMinute;
-    filterCycleCachePending_ = true;
-    stateChanged_ = true;
-    Serial.printf("[bench] filter2 read enabled=%u start=%u:%02u duration=%u:%02u\n",
-                  filterCycleCache_.enabled ? 1 : 0, filterCycleCache_.startHour,
-                  filterCycleCache_.startMinute, filterCycleCache_.durationHour,
-                  filterCycleCache_.durationMinute);
-    return {CommandStatus::Accepted, "bench filter 2 read"};
+    Serial.println("[bench] filter cycles read");
+    return {CommandStatus::Accepted, "bench filter cycles read"};
   }
   if (strcmp(action, "setFilter2") == 0) {
     const bool enabled = command["enabled"] | false;
@@ -1318,6 +1272,8 @@ void SpaController::handleFrame(const Frame &frame) {
     state_.lastUpdateMs = millis();
     state_.valid = true;
     stateChanged_ = true;
+  } else if (frame.type == MessageFilterCyclesResponse && decodeFilterCyclesResponse(frame)) {
+    stateChanged_ = true;
   }
 }
 
@@ -1354,6 +1310,59 @@ bool SpaController::decodeStatusFrame(const Frame &frame) {
   }
   editValueHour_ = frame.payload[7];
   editValueMinute_ = frame.payload[8];
+  return true;
+}
+
+bool SpaController::decodeFilterCyclesResponse(const Frame &frame) {
+  if (frame.payload.size() < 8) {
+    return false;
+  }
+
+  const uint8_t cycle2StartRaw = frame.payload[4];
+  const bool cycle2Enabled = (cycle2StartRaw & 0x80) != 0;
+  const uint8_t cycle2Start = cycle2StartRaw & 0x7f;
+  const uint8_t cycle1Start = frame.payload[0];
+  const uint8_t cycle1StartMinute = frame.payload[1];
+  const uint8_t cycle1Duration = frame.payload[2];
+  const uint8_t cycle1DurationMinute = frame.payload[3];
+  const uint8_t cycle2StartMinute = frame.payload[5];
+  const uint8_t cycle2Duration = frame.payload[6];
+  const uint8_t cycle2DurationMinute = frame.payload[7];
+  if (cycle1Start > 23 || cycle1StartMinute > 45 || cycle1StartMinute % 15 != 0 ||
+      cycle1Duration > 24 || cycle1DurationMinute > 45 || cycle1DurationMinute % 15 != 0 ||
+      cycle2Start > 23 || cycle2StartMinute > 45 || cycle2StartMinute % 15 != 0 ||
+      cycle2Duration > 24 || cycle2DurationMinute > 45 || cycle2DurationMinute % 15 != 0) {
+    logDebug("[balboa] invalid filter cycles response payload=%s", bytesToHex(frame.payload).c_str());
+    return false;
+  }
+
+  state_.filterCycle1Start = cycle1Start;
+  state_.filterCycle1StartMinute = cycle1StartMinute;
+  state_.filterCycle1Dur = cycle1Duration;
+  state_.filterCycle1DurMinute = cycle1DurationMinute;
+  state_.filterCycle2Enabled = cycle2Enabled;
+  state_.filterCycle2Start = cycle2Start;
+  state_.filterCycle2StartMinute = cycle2StartMinute;
+  state_.filterCycle2Dur = cycle2Duration;
+  state_.filterCycle2DurMinute = cycle2DurationMinute;
+  state_.filterCyclesValid = true;
+
+  filterCycleCache_.all = true;
+  filterCycleCache_.cycle1Start = cycle1Start;
+  filterCycleCache_.cycle1StartMinute = cycle1StartMinute;
+  filterCycleCache_.cycle1Duration = cycle1Duration;
+  filterCycleCache_.cycle1DurationMinute = cycle1DurationMinute;
+  filterCycleCache_.cycle2Enabled = cycle2Enabled;
+  filterCycleCache_.cycle2Start = cycle2Start;
+  filterCycleCache_.cycle2StartMinute = cycle2StartMinute;
+  filterCycleCache_.cycle2Duration = cycle2Duration;
+  filterCycleCache_.cycle2DurationMinute = cycle2DurationMinute;
+  filterCycleCachePending_ = true;
+
+  Serial.printf("[balboa] filter cycles response c1=%u:%02u/%u:%02u c2=%s %u:%02u/%u:%02u\n",
+                cycle1Start, cycle1StartMinute, cycle1Duration, cycle1DurationMinute,
+                cycle2Enabled ? "on" : "off", cycle2Start, cycle2StartMinute,
+                cycle2Duration, cycle2DurationMinute);
   return true;
 }
 
