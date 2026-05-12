@@ -369,7 +369,7 @@ function usesBlockingCommandModal(command) {
 }
 
 function waitForCommandCompletion(type) {
-  state.commandWait = { type, seenActive: false };
+  state.commandWait = { type, seenActive: type === "filter" };
   return new Promise((resolve) => {
     state.commandResolve = resolve;
   });
@@ -467,6 +467,36 @@ async function refreshStatusCapture() {
   }
 }
 
+function renderCommandLogs(logs) {
+  const list = $("#commandLogList");
+  list.replaceChildren();
+  $("#commandLogState").textContent = `${logs.length} logs`;
+  if (!logs.length) {
+    const item = document.createElement("li");
+    item.className = "command-log-empty";
+    item.textContent = "No logs saved";
+    list.append(item);
+    return;
+  }
+  logs.forEach((log) => {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = `/api/command-logs?file=${encodeURIComponent(log.name)}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = log.name;
+    item.append(link);
+    list.append(item);
+  });
+}
+
+async function loadCommandLogs() {
+  const message = await requestJson("/api/command-logs");
+  const logs = Array.isArray(message.logs) ? message.logs : [];
+  logs.sort((a, b) => String(b.name || "").localeCompare(String(a.name || "")));
+  renderCommandLogs(logs.filter((log) => log.name));
+}
+
 function startCapturePolling() {
   if (state.capturePollTimer) return;
   refreshStatusCapture().catch((error) => showToast(error.message));
@@ -539,6 +569,9 @@ function setupEvents() {
       $$(".view").forEach((view) => view.classList.remove("active"));
       button.classList.add("active");
       $(`#${button.dataset.view}`).classList.add("active");
+      if (button.dataset.view === "diagnostics") {
+        loadCommandLogs().catch((error) => showToast(error.message));
+      }
     });
   });
 
@@ -612,6 +645,10 @@ function setupEvents() {
     if (state.data?.statusCaptureActive) {
       startCapturePolling();
     }
+  });
+
+  $("#refreshCommandLogs").addEventListener("click", () => {
+    loadCommandLogs().catch((error) => showToast(error.message));
   });
 
   $("#readFilter1").addEventListener("click", async () => {
@@ -735,3 +772,12 @@ function setupEvents() {
 setupEvents();
 connectWs();
 loadConfig().catch((error) => showToast(error.message));
+loadCommandLogs().catch((error) => showToast(error.message));
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((error) => {
+      console.warn("[bp100g2] service worker registration failed", error);
+    });
+  });
+}

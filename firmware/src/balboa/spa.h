@@ -167,6 +167,9 @@ class SpaController {
   uint8_t filterProgramStepCount_ = 0;
   uint32_t filterProgramStatusMs_ = 0;
   uint32_t filterProgramCommandMs_ = 0;
+  bool filterProgramWaitForEditChange_ = false;
+  uint8_t filterProgramWaitHour_ = 0;
+  uint8_t filterProgramWaitMinute_ = 0;
   bool filterProgramLastFailed_ = false;
   String filterProgramLastError_;
   bool filterCycleCachePending_ = false;

@@ -455,6 +455,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     stateChanged_ = true;
     return enqueueButton("temp_up", ButtonTempUp);
@@ -466,6 +467,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     stateChanged_ = true;
     return enqueueButton("temp_down", ButtonTempDown);
@@ -494,6 +496,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     stateChanged_ = true;
     Serial.printf("[balboa] target temp=%d current=%d\n", targetSetTemp_, current);
@@ -518,6 +521,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     filterProgramActive_ = true;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramHomeLightSent_ = false;
     filterProgramPhase_ = FilterProgramStartTempFlash;
     filterProgramStepCount_ = 0;
@@ -561,6 +565,7 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     filterProgramActive_ = true;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramHomeLightSent_ = false;
     filterProgramPhase_ = FilterProgramStartTempFlash;
     filterProgramStepCount_ = 0;
@@ -886,6 +891,12 @@ void SpaController::processTx() {
     filterProgramWaiting_ = true;
     filterProgramStatusMs_ = state_.lastUpdateMs;
     filterProgramCommandMs_ = now;
+    filterProgramWaitForEditChange_ = command.label == "filter_start_hour" ||
+                                      command.label == "filter_start_minute" ||
+                                      command.label == "filter_run_hour" ||
+                                      command.label == "filter_run_minute";
+    filterProgramWaitHour_ = editValueHour_;
+    filterProgramWaitMinute_ = editValueMinute_;
   }
   lastTxMs_ = now;
 }
@@ -943,15 +954,19 @@ void SpaController::processFilterProgram() {
   };
   if (filterProgramWaiting_) {
     const bool statusChanged = state_.lastUpdateMs != filterProgramStatusMs_;
+    const bool editChanged = !filterProgramWaitForEditChange_ ||
+                             editValueHour_ != filterProgramWaitHour_ ||
+                             editValueMinute_ != filterProgramWaitMinute_;
     const bool timedOut = now - filterProgramCommandMs_ >= waitTimeoutMs;
-    if ((!statusChanged || !filterPhaseReachedExpectedScreen()) && !timedOut) {
+    if ((!statusChanged || !filterPhaseReachedExpectedScreen() || !editChanged) && !timedOut) {
       return;
     }
-    logDebug("[balboa] filter%u phase complete phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u statusChanged=%u elapsed=%lu",
+    logDebug("[balboa] filter%u phase complete phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u statusChanged=%u editChanged=%u elapsed=%lu",
              filterProgramCycle_, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_, filterMenuSelector_,
-             editValueHour_, editValueMinute_, statusChanged ? 1 : 0,
+             editValueHour_, editValueMinute_, statusChanged ? 1 : 0, editChanged ? 1 : 0,
              static_cast<unsigned long>(now - filterProgramCommandMs_));
     filterProgramWaiting_ = false;
+    filterProgramWaitForEditChange_ = false;
     logDebug("[balboa] filter%u screen flags targetSelector=%02x filterMenu=%u f2Enable=%u f2Off=%u f2On=%u startPrompt=%u startHour=%u startMin=%u runPrompt=%u endPrompt=%u runHour=%u runMin=%u targetEnabled=%u readOnly=%u",
              filterProgramCycle_, targetSelector, onFilterMenu ? 1 : 0, onFilter2EnableScreen ? 1 : 0,
              onFilter2EnableOff ? 1 : 0, onFilter2EnableOn ? 1 : 0,
@@ -999,6 +1014,7 @@ void SpaController::processFilterProgram() {
       filterProgramActive_ = false;
       filterProgramReadOnly_ = false;
       filterProgramHomeLightSent_ = false;
+      filterProgramWaitForEditChange_ = false;
       stateChanged_ = true;
       logDebug("[balboa] filter%u programming complete", filterProgramCycle_);
       finishCommandTrace(true, "complete");
@@ -1020,6 +1036,7 @@ void SpaController::processFilterProgram() {
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     filterProgramHomeLightSent_ = false;
     stateChanged_ = true;
@@ -1034,6 +1051,7 @@ void SpaController::processFilterProgram() {
     filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
+    filterProgramWaitForEditChange_ = false;
     filterProgramReadOnly_ = false;
     filterProgramHomeLightSent_ = false;
     stateChanged_ = true;
@@ -1240,6 +1258,7 @@ void SpaController::processFilterProgram() {
     default:
       filterProgramActive_ = false;
       filterProgramReadOnly_ = false;
+      filterProgramWaitForEditChange_ = false;
       stateChanged_ = true;
       finishCommandTrace(false, "unknown phase");
       break;

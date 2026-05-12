@@ -338,6 +338,52 @@ h1 {
   margin-bottom: 10px;
 }
 
+.command-log-header {
+  align-items: center;
+  margin-top: 18px;
+}
+
+.command-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.command-log-list li {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.command-log-list a,
+.command-log-empty {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  color: var(--accent);
+  font-family: "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.command-log-list a {
+  text-decoration: none;
+}
+
+.command-log-list a:focus,
+.command-log-list a:hover {
+  text-decoration: underline;
+}
+
+.command-log-empty {
+  color: var(--muted);
+}
+
 .capture-log {
   width: 100%;
   min-height: 360px;
