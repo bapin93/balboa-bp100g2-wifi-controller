@@ -111,6 +111,25 @@ void test_encode_filter_cycles_request_uses_panel_addressing() {
   TEST_ASSERT_EQUAL_HEX8(0x00, result.frame->payload[2]);
 }
 
+void test_encode_set_filter_cycles_command_packs_filter2_enable_bit() {
+  const std::vector<uint8_t> wire = buildSetFilterCyclesCommand(8, 0, 2, 30, true, 20, 15, 3, 45);
+  ParseResult result = decodeFrameBytes(wire);
+  TEST_ASSERT_EQUAL(ParseError::None, result.error);
+  TEST_ASSERT_TRUE(result.frame.has_value());
+  TEST_ASSERT_EQUAL_HEX8(0x10, result.frame->source);
+  TEST_ASSERT_EQUAL_HEX8(0xbf, result.frame->target);
+  TEST_ASSERT_EQUAL_HEX8(MessageFilterCyclesResponse, result.frame->type);
+  TEST_ASSERT_EQUAL_UINT8(8, result.frame->payload.size());
+  TEST_ASSERT_EQUAL_UINT8(8, result.frame->payload[0]);
+  TEST_ASSERT_EQUAL_UINT8(0, result.frame->payload[1]);
+  TEST_ASSERT_EQUAL_UINT8(2, result.frame->payload[2]);
+  TEST_ASSERT_EQUAL_UINT8(30, result.frame->payload[3]);
+  TEST_ASSERT_EQUAL_HEX8(0x94, result.frame->payload[4]);
+  TEST_ASSERT_EQUAL_UINT8(15, result.frame->payload[5]);
+  TEST_ASSERT_EQUAL_UINT8(3, result.frame->payload[6]);
+  TEST_ASSERT_EQUAL_UINT8(45, result.frame->payload[7]);
+}
+
 void test_stream_parser_emits_complete_frame() {
   std::vector<uint8_t> wire = buildSetTimeCommand(14, 32);
   FrameParser parser;
@@ -137,6 +156,7 @@ int main(int argc, char **argv) {
   RUN_TEST(test_encode_set_time_command_uses_panel_addressing);
   RUN_TEST(test_encode_set_temperature_command_uses_panel_addressing);
   RUN_TEST(test_encode_filter_cycles_request_uses_panel_addressing);
+  RUN_TEST(test_encode_set_filter_cycles_command_packs_filter2_enable_bit);
   RUN_TEST(test_stream_parser_emits_complete_frame);
   return UNITY_END();
 }

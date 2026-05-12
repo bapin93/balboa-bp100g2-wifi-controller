@@ -62,6 +62,11 @@ std::vector<uint8_t> buildToggleItemCommand(uint8_t itemCode);
 std::vector<uint8_t> buildSetTemperatureCommand(uint8_t temperature);
 std::vector<uint8_t> buildSetTimeCommand(uint8_t hour, uint8_t minute);
 std::vector<uint8_t> buildFilterCyclesRequest();
+std::vector<uint8_t> buildSetFilterCyclesCommand(uint8_t cycle1Start, uint8_t cycle1StartMinute,
+                                                 uint8_t cycle1Duration, uint8_t cycle1DurationMinute,
+                                                 bool cycle2Enabled, uint8_t cycle2Start,
+                                                 uint8_t cycle2StartMinute, uint8_t cycle2Duration,
+                                                 uint8_t cycle2DurationMinute);
 
 std::string bytesToHex(const std::vector<uint8_t> &bytes);
 const char *parseErrorName(ParseError error);

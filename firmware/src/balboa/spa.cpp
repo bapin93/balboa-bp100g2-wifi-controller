@@ -507,36 +507,55 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
                     durationMinute > 45 || durationMinute % 15 != 0)) {
       return {CommandStatus::InvalidValue, "filter minutes must be 0, 15, 30, or 45"};
     }
-    if (filterProgramActive_) {
-      return {CommandStatus::QueueFull, "filter programming already active"};
-    }
-    if (!queue_.empty()) {
-      return {CommandStatus::QueueFull, "command queue must be empty before filter programming"};
+    if (!enabled && (startMinute < 0 || startMinute > 45 || startMinute % 15 != 0 || durationMinute < 0 ||
+                     durationMinute > 45 || durationMinute % 15 != 0)) {
+      return {CommandStatus::InvalidValue, "filter minutes must be 0, 15, 30, or 45"};
     }
 
     targetTempActive_ = false;
     targetTempWaitingForStatus_ = false;
     targetTempPhase_ = TargetTempIdle;
-    filterProgramReadOnly_ = false;
-    filterProgramCycle_ = isFilter2 ? 2 : 1;
-    filterProgramEnabled_ = enabled;
-    filterProgramStartHour_ = static_cast<uint8_t>(enabled ? startHour : 0);
-    filterProgramStartMinute_ = static_cast<uint8_t>(startMinute);
-    filterProgramDurationHour_ = static_cast<uint8_t>(enabled ? durationHour : 0);
-    filterProgramDurationMinute_ = static_cast<uint8_t>(durationMinute);
-    filterProgramActive_ = true;
+    filterProgramActive_ = false;
     filterProgramWaiting_ = false;
     filterProgramQueued_ = false;
     filterProgramWaitForEditChange_ = false;
-    filterProgramHomeLightSent_ = false;
-    filterProgramPhase_ = FilterProgramStartTempFlash;
-    filterProgramStepCount_ = 0;
+    filterProgramReadOnly_ = false;
+
+    uint8_t cycle1Start = state_.filterCycle1Start;
+    uint8_t cycle1StartMinute = state_.filterCycle1StartMinute;
+    uint8_t cycle1Duration = state_.filterCycle1Dur;
+    uint8_t cycle1DurationMinute = state_.filterCycle1DurMinute;
+    bool cycle2Enabled = state_.filterCycle2Enabled;
+    uint8_t cycle2Start = state_.filterCycle2Start;
+    uint8_t cycle2StartMinute = state_.filterCycle2StartMinute;
+    uint8_t cycle2Duration = state_.filterCycle2Dur;
+    uint8_t cycle2DurationMinute = state_.filterCycle2DurMinute;
+    if (isFilter2) {
+      cycle2Enabled = enabled;
+      cycle2Start = static_cast<uint8_t>(enabled ? startHour : 0);
+      cycle2StartMinute = static_cast<uint8_t>(startMinute);
+      cycle2Duration = static_cast<uint8_t>(enabled ? durationHour : 0);
+      cycle2DurationMinute = static_cast<uint8_t>(durationMinute);
+    } else {
+      cycle1Start = static_cast<uint8_t>(startHour);
+      cycle1StartMinute = static_cast<uint8_t>(startMinute);
+      cycle1Duration = static_cast<uint8_t>(durationHour);
+      cycle1DurationMinute = static_cast<uint8_t>(durationMinute);
+    }
+
     stateChanged_ = true;
-    startCommandTrace(isFilter2 ? "SetFilter2" : "SetFilter1");
-    logDebug("[balboa] filter%u target enabled=%u start=%02u:%02u duration=%02u:%02u", filterProgramCycle_,
-             filterProgramEnabled_ ? 1 : 0, filterProgramStartHour_, filterProgramStartMinute_,
-             filterProgramDurationHour_, filterProgramDurationMinute_);
-    return {CommandStatus::Accepted, isFilter2 ? "filter 2 programming started" : "filter 1 programming started"};
+    logDebug("[balboa] direct filter set c1=%02u:%02u/%02u:%02u c2=%u %02u:%02u/%02u:%02u",
+             cycle1Start, cycle1StartMinute, cycle1Duration, cycle1DurationMinute,
+             cycle2Enabled ? 1 : 0, cycle2Start, cycle2StartMinute, cycle2Duration, cycle2DurationMinute);
+    CommandResult result = enqueue("set_filter_cycles_direct",
+                                   buildSetFilterCyclesCommand(cycle1Start, cycle1StartMinute,
+                                                               cycle1Duration, cycle1DurationMinute,
+                                                               cycle2Enabled, cycle2Start, cycle2StartMinute,
+                                                               cycle2Duration, cycle2DurationMinute));
+    if (result.status == CommandStatus::Accepted) {
+      enqueue("read_filter_cycles_confirm", buildFilterCyclesRequest(), 900);
+    }
+    return result;
   }
 
   if (strcmp(action, "readFilterCycles") == 0) {

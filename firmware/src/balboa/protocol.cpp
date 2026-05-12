@@ -195,6 +195,21 @@ std::vector<uint8_t> buildFilterCyclesRequest() {
   return encodeFrame(frame);
 }
 
+std::vector<uint8_t> buildSetFilterCyclesCommand(uint8_t cycle1Start, uint8_t cycle1StartMinute,
+                                                 uint8_t cycle1Duration, uint8_t cycle1DurationMinute,
+                                                 bool cycle2Enabled, uint8_t cycle2Start,
+                                                 uint8_t cycle2StartMinute, uint8_t cycle2Duration,
+                                                 uint8_t cycle2DurationMinute) {
+  Frame frame;
+  frame.source = PanelSource;
+  frame.target = PanelTarget;
+  frame.type = MessageFilterCyclesResponse;
+  const uint8_t cycle2StartEncoded = static_cast<uint8_t>((cycle2Start & 0x7f) | (cycle2Enabled ? 0x80 : 0x00));
+  frame.payload = {cycle1Start, cycle1StartMinute, cycle1Duration, cycle1DurationMinute,
+                   cycle2StartEncoded, cycle2StartMinute, cycle2Duration, cycle2DurationMinute};
+  return encodeFrame(frame);
+}
+
 std::string bytesToHex(const std::vector<uint8_t> &bytes) {
   std::ostringstream out;
   out << std::hex << std::setfill('0');
