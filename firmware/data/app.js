@@ -1347,6 +1347,7 @@ function renderThermal() {
   body.replaceChildren();
   const thermal = state.thermal;
   if (!thermal?.model) {
+    $("#thermalNowCard").replaceChildren();
     card.replaceChildren(maintRow("Needs a firmware update", "", "muted"));
     $("#thermalHint").textContent = "";
     $("#thermalRunsMeta").textContent = "None yet";
@@ -1359,29 +1360,35 @@ function renderThermal() {
   const air = Number.isFinite(outside) ? outside : ThermalFallbackOutside;
   const data = state.data || {};
   const water = waterReading(data).temp;
-  const rows = [];
+  // Right now: the learned numbers applied to today's water and weather.
+  const now = [];
   if (!weather.hasLocation) {
-    rows.push(maintRow("Outside", "Set a location in Settings", "due"));
+    now.push(maintRow("Outside", "Set a location in Settings", "due"));
   } else if (Number.isFinite(outside)) {
-    rows.push(maintRow("Outside", `${Math.round(outside)}°F · forecast ${ageText(weather.fetchedAt)}`));
+    now.push(maintRow("Outside", `${Math.round(outside)}°F · forecast ${ageText(weather.fetchedAt)}`));
   } else {
-    rows.push(maintRow("Outside", weather.error || "Waiting for the forecast", "muted"));
+    now.push(maintRow("Outside", weather.error || "Waiting for the forecast", "muted"));
   }
   if (Number.isFinite(water)) {
     const loss = model.lossCoeff * (water - air);
-    rows.push(maintRow("Heats Now", `${(model.heaterRate - loss).toFixed(1)}°F/hr`));
-    rows.push(maintRow("Cools Now", `${loss.toFixed(1)}°F/hr with the heater off`));
+    now.push(maintRow("Heater On", `rises ${(model.heaterRate - loss).toFixed(1)}°F/hr`));
+    now.push(maintRow("Heater Off", `drops ${loss.toFixed(1)}°F/hr`));
     if (Number.isFinite(data.setTemp) && data.setTemp > water) {
       const hours = thermalHoursToHeat(model, water, data.setTemp, air);
-      rows.push(maintRow(`To ${Math.round(data.setTemp)}°F`, Number.isFinite(hours) ? `about ${hoursMinutes(hours * 3600)}` : "Heater can't keep up"));
+      now.push(maintRow(`To ${Math.round(data.setTemp)}°F`, Number.isFinite(hours) ? `about ${hoursMinutes(hours * 3600)}` : "Heater can't keep up"));
     }
   }
-  rows.push(maintRow("Heater Adds", `${model.heaterRate.toFixed(1)}°F/hr · ${thermalLearnedText(heatRuns.length)}`));
-  rows.push(maintRow("Cools, 100° in 40° Air", `${(model.lossCoeff * 60).toFixed(1)}°F/hr · ${thermalLearnedText(coolRuns.length)}`));
-  card.replaceChildren(...rows);
-  $("#thermalHint").textContent = "Learned from the tub's own heating and cooling. Runs while the tub is in use are " +
-    "skipped, and cool-downs need a few quiet hours with the heater off. Until then the starting estimate comes from " +
-    "the heater kW and tub volume in Settings → Energy.";
+  $("#thermalNowCard").replaceChildren(...now);
+  // Learned: properties of the tub itself, which only change as runs are measured.
+  card.replaceChildren(
+    maintRow("Heater Power", `${model.heaterRate.toFixed(1)}°F/hr · ${thermalLearnedText(heatRuns.length)}`),
+    maintRow("Heat Loss", `${(model.lossCoeff * 60).toFixed(1)}°F/hr · ${thermalLearnedText(coolRuns.length)}`),
+  );
+  $("#thermalHint").textContent = "Heater power is how fast the heater alone warms the water, before any heat loss. " +
+    "Heat loss is how fast it cools with the heater off, at 100°F water and 40°F outside so it compares across " +
+    "seasons; right now it's more or less depending on how much warmer the water is than the air. Both are learned " +
+    "from the tub's own heating and cool-downs (runs while it's in use are skipped). Until then they're estimated " +
+    "from the heater kW and tub volume in Settings → Energy.";
 
   const all = [...heatRuns.map((run) => ({ ...run, kind: "Heat" })), ...coolRuns.map((run) => ({ ...run, kind: "Cool" }))]
     .sort((a, b) => b.t - a.t);
