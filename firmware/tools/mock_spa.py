@@ -89,7 +89,7 @@ class MockSpa:
                               "summerOffPeak": 0.07884, "winterPeak": 0.18331, "winterOffPeak": 0.06792}},
             "power": {"heaterKw": 5.5, "pump1LowKw": 0.5, "pump1HighKw": 1.8, "pump2Kw": 1.5, "standbyW": 30,
                       "tubGallons": 200},
-            "smart": {"minTemp": 90, "auto": True},
+            "smart": {"minTemp": 90, "auto": True, "readyTemp": 102},
         }
         self.water_unknown = False  # like a real spa between pump runs: true temp simulated, not reported
         self.last_water = None      # last reported reading and when, as the firmware keeps it
@@ -107,7 +107,6 @@ class MockSpa:
         self.hold_until = 0.0
         self.soak = None    # mirrors HeatController's soak, plus the plan it follows
         self.manual = None
-        self.comfort = 100.0
         self.auto_plan = None  # {"start", "steps"} while Auto runs
 
     # ── maintenance (mirrors src/storage/maintenance.cpp) ──
@@ -839,8 +838,11 @@ class MockSpa:
         s = self.state
         return s["jet1Speed"] == 2 or s["jet2Speed"] > 0 or s["blower"] or s["light"]
 
+    @property
+    def comfort(self):
+        return float(self.config["smart"]["readyTemp"])
+
     def _manual_change(self, value):
-        self.comfort = value
         if self.soak or self.config["smart"]["auto"]:
             self.soak = None
             self.auto_plan = None
@@ -1003,6 +1005,8 @@ class MockSpa:
             self.config["power"].update(body.get("power", {}))
             was_auto = self.config["smart"]["auto"]
             self.config["smart"].update(body.get("smart", {}))
+            if body.get("smart"):
+                self.auto_plan = None  # replan with the new settings, as the firmware does
             if was_auto and not self.config["smart"]["auto"] and not self.soak and not self.manual:
                 self.state["setTemp"] = self.comfort  # like the firmware: turning Auto off puts comfort back
 

@@ -164,9 +164,12 @@ void test_tou_rates_and_power() {
 
   JsonDocument smart;
   TEST_ASSERT_TRUE(current.smartAuto);
+  TEST_ASSERT_EQUAL_UINT8(102, current.smartReadyTemp);
   smart["smart"]["minTemp"] = 92;
   smart["smart"]["auto"] = false;
+  smart["smart"]["readyTemp"] = 101;
   TEST_ASSERT_TRUE(validateConfigJson(smart.as<JsonVariantConst>(), current, next, &error));
+  TEST_ASSERT_EQUAL_UINT8(101, next.smartReadyTemp);
   TEST_ASSERT_EQUAL_UINT8(92, next.smartMinTemp);
   TEST_ASSERT_FALSE(next.smartAuto);
   smart["smart"]["minTemp"] = 110;

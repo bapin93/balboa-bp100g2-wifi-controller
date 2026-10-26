@@ -161,6 +161,7 @@ PlanContext SmartHeat::makeContext() const {
   context.lossCoeff = thermal_.lossCoeff();
   context.minTemp = config_.smartMinTemp;
   context.autoEnabled = config_.smartAuto;
+  context.readyTemp = config_.smartReadyTemp;
   context.lowRange = !spa_.state().tempRangeHigh;
   const WeatherClient &weather = weather_;
   context.outsideAt = [&weather](uint32_t at) { return weather.outsideAt(at); };

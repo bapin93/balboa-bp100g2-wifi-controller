@@ -116,7 +116,6 @@ void test_panel_change_takes_over() {
   spa.run(60);
   TEST_ASSERT_FALSE(controller.soakActive());
   TEST_ASSERT_TRUE(controller.manualActive());
-  TEST_ASSERT_EQUAL_FLOAT(102, controller.comfortTemp());
   const int before = spa.commands;
   spa.run(2 * Hour);
   TEST_ASSERT_EQUAL_INT(before, spa.commands);  // hands off
@@ -216,6 +215,7 @@ void test_state_survives_a_reboot() {
 PlanContext autoContext() {
   PlanContext ctx = context();
   ctx.autoEnabled = true;
+  ctx.readyTemp = 102;
   ctx.readyWithinHours = [](uint32_t at) {
     const time_t t = at;
     tm local;
@@ -235,10 +235,10 @@ void test_auto_sets_back_and_is_ready_for_the_evening() {
   HeatController controller;
   Spa spa{controller};
   spa.ctx = autoContext();
-  spa.setTemp = 102;  // the comfort temp as found
+  spa.setTemp = 102;
   spa.water = 101;
   spa.run(Hour);
-  TEST_ASSERT_EQUAL_FLOAT(102, controller.comfortTemp());
+  TEST_ASSERT_EQUAL_FLOAT(102, controller.comfortTemp());  // the Ready Temp setting
   TEST_ASSERT_TRUE(spa.setTemp < 98);  // set back for the workday
   spa.run(9 * Hour);  // 6 PM
   // Within half an hour of 102: about 99.3°F or warmer.
@@ -269,10 +269,10 @@ void test_auto_pauses_for_a_manual_raise() {
   spa.setTemp = 102;
   spa.water = 101;
   spa.run(Hour);
-  spa.setTemp = 104;  // turned up by hand
+  spa.setTemp = 104;  // turned up by hand for a soak
   spa.run(60);
   TEST_ASSERT_TRUE(controller.manualActive());
-  TEST_ASSERT_EQUAL_FLOAT(104, controller.comfortTemp());  // the new comfort temp
+  TEST_ASSERT_EQUAL_FLOAT(102, controller.comfortTemp());  // a soak temp isn't the standby target
   TEST_ASSERT_TRUE(controller.lastIntentAt() > 0);
   spa.inUse = true;
   spa.run(2 * Hour);

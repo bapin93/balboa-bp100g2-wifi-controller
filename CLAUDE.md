@@ -117,11 +117,11 @@ extra_scripts = pre:scripts/upload_fs.py   ; optional helper
 ### Persistent Files (the `userdata` LittleFS partition, so web uploads don't erase them)
 
 ```
-/config.json    # timezone, location, filter cycles, TOU + rates, power, tub volume, smart {minTemp, auto}
+/config.json    # timezone, location, filter cycles, TOU + rates, power, tub volume, smart {minTemp, auto, readyTemp}
 /runtime.json   # 30 days + 48 hours of runtime totals
 /water.json     # water care log
 /thermal.json   # last 30 measured heating runs and cool-downs
-/smart.json     # comfort temp, active soak, manual hold
+/smart.json     # active soak, manual hold
 /usage.json     # 2 x 48 soak likelihoods + the day being recorded
 ```
 Maintenance lives in NVS instead.
@@ -225,7 +225,8 @@ Likelihood sets how long the owner will wait for heat-up:
 
 - **Auto** (Smart Standby, `smart.auto`, on by default): each step's `minTemp` is the readiness temp
   (`readinessTemp`), i.e. the coldest water that still reaches the **comfort temp** within that slot's
-  wait. It is never below `smart.minTemp` (90). The comfort temp is the last temp set by hand.
+  wait. It is never below `smart.minTemp` (90). The comfort temp is the **Ready Temp** setting
+  (`smart.readyTemp`, default 102). Turning the spa up by hand (e.g. to 104 for a soak) doesn't change it.
 - **Soak**: target temp held from `readyAt` for N hours, with the plan meeting it as cheaply as possible.
   As soon as possible (`readyAt` 0) heats straight through. A soak runs on until 30 min after the last
   use. When it ends, Auto takes over (or the old set temp is restored if Auto is off).

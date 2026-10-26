@@ -19,6 +19,7 @@ struct PlanContext {
   float heaterRate = 6.0f;
   float lossCoeff = 0.012f;
   float minTemp = 90;  // never planned or set below this
+  float readyTemp = 102;  // Auto keeps the water within reach of this (the Ready Temp setting)
   bool autoEnabled = false;  // keep the tub ready by usage when no soak is planned
   bool lowRange = false;  // the spa is in its low temp range: the owner wants it left to cool, so stand aside
   std::function<float(uint32_t)> outsideAt = [](uint32_t) { return NAN; };
@@ -35,8 +36,8 @@ struct ControllerTick {
 };
 
 // Decides the spa's set temperature.
-//   - Auto: with nothing else going on, keeps the water warm enough to reach the comfort temp (the last one
-//     set by hand) within the wait the usage model allows for each upcoming half hour, as cheaply as the
+//   - Auto: with nothing else going on, keeps the water warm enough to reach the comfort temp (the Ready
+//     Temp setting) within the wait the usage model allows for each upcoming half hour, as cheaply as the
 //     TOU prices and forecast allow.
 //   - Soak: follows the cheapest plan to be at the target by the ready time (or heats straight through when
 //     it's as soon as possible), then holds it for the session.
@@ -114,7 +115,7 @@ class HeatController {
 
   Soak soak_;
   Manual manual_;
-  float comfort_ = NAN;  // the last temp set by hand
+  float comfort_ = NAN;  // the Ready Temp setting, as of the last tick
   uint32_t lastIntentAt_ = 0;
   bool soakArrived_ = false;  // the current soak's ready time has been counted as intent
   bool autoEnabled_ = false;  // as of the last tick

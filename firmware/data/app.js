@@ -603,10 +603,22 @@ async function refreshSoakPreview() {
   }
 }
 
+// The last soak target, remembered on this device so the next soak starts there.
+const LastSoakTargetKey = "bp100g2.lastSoakTarget";
+
+function lastSoakTarget() {
+  try {
+    const value = Number(localStorage.getItem(LastSoakTargetKey));
+    return value >= 80 && value <= 104 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function openSoakSheet() {
   const data = state.data || {};
   const soak = data.smart?.soak;
-  const fallback = Math.max(80, Math.min(104, Math.round(data.setTemp || 102)));
+  const fallback = lastSoakTarget() ?? Math.max(80, Math.min(104, Math.round(data.smart?.comfortTemp || data.setTemp || 102)));
   $("#soakTarget").value = soak?.target ?? fallback;
   $("#soakHours").value = String(Math.min(4, Math.max(1, Math.round(soak?.hours ?? 2))));
   $("#soakWhen").value = soak && !soak.asap ? "at" : "asap";
@@ -644,8 +656,16 @@ function setupSoak() {
     if (event.target.id === "soakSheet") closeSoakSheet();
   });
   $("#soakConfirm").addEventListener("click", async () => {
-    const result = await sendCommand({ action: "soak", ...soakRequest() });
-    if (result) closeSoakSheet();
+    const request = soakRequest();
+    const result = await sendCommand({ action: "soak", ...request });
+    if (result) {
+      try {
+        localStorage.setItem(LastSoakTargetKey, String(request.target));
+      } catch {
+        // private mode or storage off: the sheet just won't remember
+      }
+      closeSoakSheet();
+    }
   });
   $("#smartAction").addEventListener("click", (event) => {
     const action = event.target.dataset.action;
@@ -2898,6 +2918,7 @@ function fillEnergySettings(config) {
   Object.entries(RateFields).forEach(([id, key]) => { $(`#${id}`).value = rates[key] ? rates[key] : ""; });
   Object.entries(PowerFields).forEach(([id, key]) => { $(`#${id}`).value = power[key] ?? ""; });
   $("#smartMinTemp").value = config.smart?.minTemp ?? "";
+  $("#smartReadyTemp").value = config.smart?.readyTemp ?? "";
   $("#smartAuto").checked = config.smart?.auto !== false;
 }
 
@@ -2930,6 +2951,7 @@ function setupEnergySettings() {
   });
   Object.entries(RateFields).forEach(([id, key]) => numberField(id, (value) => saveConfig({ tou: { rates: { [key]: value } } }, "Rate saved")));
   numberField("smartMinTemp", (value) => saveConfig({ smart: { minTemp: Math.round(value) } }));
+  numberField("smartReadyTemp", (value) => saveConfig({ smart: { readyTemp: Math.round(value) } }, "Ready temp saved"));
   $("#smartAuto").addEventListener("change", (event) => saveConfig({ smart: { auto: event.target.checked } }));
   Object.entries(PowerFields).forEach(([id, key]) => numberField(id, (value) =>
     saveConfig({ power: { [key]: WholeNumberPower.includes(key) ? Math.round(value) : value } }, "Power saved")));

@@ -37,6 +37,10 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
     replanNeeded_ = true;
     return NAN;
   }
+  if (context.readyTemp != comfort_) {
+    comfort_ = context.readyTemp;
+    replanNeeded_ = true;
+  }
   if (context.autoEnabled != autoEnabled_) {
     autoEnabled_ = context.autoEnabled;
     replanNeeded_ = true;
@@ -45,11 +49,6 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
       plan_ = PlanResult();
       startRestore(comfort_, now);
     }
-  }
-  if (isnan(comfort_)) {
-    // First run: the set temp as found is the best guess at what the owner likes.
-    comfort_ = soak_.active && !isnan(soak_.restoreTemp) ? soak_.restoreTemp : roundf(tick.setTemp);
-    dirty_ = true;
   }
   noteSetTemp(tick);
   if (tick.inUse) {
@@ -172,7 +171,8 @@ const char *HeatController::scheduleSoak(float target, uint32_t readyAt, float h
     }
   }
   // Keep the original temp to go back to when one soak replaces another.
-  const float restore = soak_.active ? soak_.restoreTemp : manual_.active ? manual_.temp : comfort_;
+  const float restore = soak_.active ? soak_.restoreTemp : manual_.active ? manual_.temp
+                        : autoEnabled_ ? comfort_ : roundf(tick.setTemp);
   soak_ = Soak();
   soak_.active = true;
   soak_.target = roundf(target);
@@ -240,7 +240,6 @@ void HeatController::noteSetTemp(const ControllerTick &tick) {
     pendingSet_ = NAN;  // ours
     return;
   }
-  comfort_ = set;
   if (set > before) {
     lastIntentAt_ = tick.now;
   }
@@ -447,9 +446,6 @@ void HeatController::writePlanJson(JsonObject out) const {
 }
 
 void HeatController::toJson(JsonObject out) const {
-  if (!isnan(comfort_)) {
-    out["comfort"] = comfort_;
-  }
   if (soak_.active) {
     JsonObject soak = out["soak"].to<JsonObject>();
     soak["target"] = soak_.target;
@@ -470,7 +466,6 @@ void HeatController::toJson(JsonObject out) const {
 }
 
 void HeatController::fromJson(JsonVariantConst in) {
-  comfort_ = in["comfort"] | (in["lastManualTemp"] | NAN);  // older files called it lastManualTemp
   soak_ = Soak();
   if (in["soak"].is<JsonObjectConst>()) {
     JsonVariantConst soak = in["soak"];

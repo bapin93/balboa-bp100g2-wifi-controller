@@ -365,12 +365,16 @@
                 </label>
               </div>
               <div class="form-row">
+                <label class="form-row-label" for="smartReadyTemp">Ready Temp <span class="row-sub">°F</span></label>
+                <input class="form-row-input" id="smartReadyTemp" type="number" min="80" max="104" step="1" inputmode="numeric" placeholder="102" />
+              </div>
+              <div class="form-row">
                 <label class="form-row-label" for="smartMinTemp">Lowest Smart Temp <span class="row-sub">°F</span></label>
                 <input class="form-row-input" id="smartMinTemp" type="number" min="50" max="104" step="1" inputmode="numeric" placeholder="90" />
               </div>
             </div>
             <p class="form-hint" id="tempRangeHint">Each range keeps its own set temperature. Use Low to save energy while the tub sits unused.</p>
-            <p class="form-hint">Smart Standby lets the water cool when you're unlikely to get in and heats ahead of the times you usually do, off-peak when it can: ready within 30 minutes when you're likely to soak, 2 hours when you might, and 4 hours otherwise. It learns those times from when the jets or light come on. Changing the temperature yourself pauses it until an hour after you get out. The water never goes below the lowest smart temp, except in the Low range, where smart heating stays off so the tub can cool.</p>
+            <p class="form-hint">Smart Standby lets the water cool when you're unlikely to get in and heats ahead of the times you usually do, off-peak when it can, so it can reach the ready temp within 30 minutes when you're likely to soak, 2 hours when you might, and 4 hours otherwise. Heat Now heats to the ready temp; turning the spa up yourself or planning a soak can go hotter. It learns those times from temperature changes, planned soaks and jet use. Changing the temperature yourself pauses it until an hour after you get out. The water never goes below the lowest smart temp, except in the Low range, where smart heating stays off so the tub can cool.</p>
 
             <p class="settings-section-title">Clock</p>
             <div class="card-form">
