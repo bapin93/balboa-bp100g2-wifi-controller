@@ -123,6 +123,13 @@ std::optional<ParseResult> FrameParser::ingest(uint8_t byte) {
     if (buffer_.size() == 1) {
       return std::nullopt;
     }
+    // The protocol doesn't escape 0x7e, so a CRC or payload byte can equal the delimiter. The length byte
+    // says where the frame ends; a 0x7e before that point is data.
+    const size_t expectedWireLength = static_cast<size_t>(buffer_[1]) + 2;
+    if (buffer_.size() + 1 < expectedWireLength) {
+      buffer_.push_back(byte);
+      return std::nullopt;
+    }
 
     buffer_.push_back(byte);
     auto result = decodeFrameBytes(buffer_);

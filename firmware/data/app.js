@@ -206,8 +206,7 @@ function renderOverview(data, caps) {
     setValue("ovLastFault", "None recorded", true);
   } else {
     const latest = state.faultLog.entries[0];
-    const days = latest.daysAgo === 0 ? "today" : latest.daysAgo === 1 ? "yesterday" : `${latest.daysAgo} days ago`;
-    setValue("ovLastFault", `${FaultText[latest.code] || `Code ${latest.code}`} · ${days}`);
+    setValue("ovLastFault", `${FaultText[latest.code] || `Code ${latest.code}`} · ${faultDaysText(latest.daysAgo).toLowerCase()}`);
   }
 
   renderOverviewToday();
@@ -576,9 +575,14 @@ async function loadSpaInfo() {
   container.replaceChildren(...(rows.length ? rows : [infoRow("Waiting for the spa…", "")]));
 }
 
+// The spa reports 255 days ago for entries too old (or too unclear) to date.
+function faultDaysText(daysAgo) {
+  if (daysAgo >= 255) return "A while ago";
+  return daysAgo === 0 ? "Today" : daysAgo === 1 ? "Yesterday" : `${daysAgo} days ago`;
+}
+
 function faultWhen(entry) {
-  const days = entry.daysAgo === 0 ? "Today" : entry.daysAgo === 1 ? "Yesterday" : `${entry.daysAgo} days ago`;
-  return `${days} at ${clock12Label(entry.hour, entry.minute)}`;
+  return entry.daysAgo >= 255 ? faultDaysText(entry.daysAgo) : `${faultDaysText(entry.daysAgo)} at ${clock12Label(entry.hour, entry.minute)}`;
 }
 
 async function loadFaults() {

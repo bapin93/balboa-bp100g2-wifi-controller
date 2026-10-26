@@ -283,6 +283,48 @@ void test_encode_configuration_request() {
   TEST_ASSERT_EQUAL_HEX8(0x01, result.frame->payload[2]);
 }
 
+void test_stream_parser_keeps_frame_whose_crc_is_the_delimiter() {
+  // Setup parameters reply captured from a BP100G2: its CRC byte is 0x7e, the frame delimiter.
+  const std::vector<uint8_t> wire = {0x7e, 0x0f, 0x10, 0xbf, 0x25, 0x04, 0x02, 0x32, 0x63,
+                                     0x50, 0x68, 0x09, 0x03, 0x41, 0x02, 0x7e, 0x7e};
+  FrameParser parser;
+  std::optional<ParseResult> parsed;
+  int results = 0;
+  for (uint8_t byte : wire) {
+    auto result = parser.ingest(byte);
+    if (result.has_value()) {
+      parsed = result;
+      ++results;
+    }
+  }
+  TEST_ASSERT_EQUAL(1, results);
+  TEST_ASSERT_EQUAL(ParseError::None, parsed->error);
+  TEST_ASSERT_EQUAL_HEX8(MessageSetupParametersResponse, parsed->frame->type);
+  const auto params = decodeSetupParameters(parsed->frame->payload);
+  TEST_ASSERT_TRUE(params.has_value());
+  TEST_ASSERT_EQUAL_UINT8(50, params->lowRangeMin);
+  TEST_ASSERT_EQUAL_UINT8(104, params->highRangeMax);
+}
+
+void test_stream_parser_recovers_after_frame_with_delimiter_crc() {
+  // The frame after a 0x7e-CRC frame must still parse.
+  std::vector<uint8_t> wire = {0x7e, 0x0f, 0x10, 0xbf, 0x25, 0x04, 0x02, 0x32, 0x63,
+                               0x50, 0x68, 0x09, 0x03, 0x41, 0x02, 0x7e, 0x7e};
+  const std::vector<uint8_t> next = buildSetTimeCommand(9, 30);
+  wire.insert(wire.end(), next.begin(), next.end());
+  FrameParser parser;
+  std::vector<ParseResult> results;
+  for (uint8_t byte : wire) {
+    auto result = parser.ingest(byte);
+    if (result.has_value()) {
+      results.push_back(*result);
+    }
+  }
+  TEST_ASSERT_EQUAL(2, results.size());
+  TEST_ASSERT_EQUAL(ParseError::None, results[1].error);
+  TEST_ASSERT_EQUAL_HEX8(MessageSetTime, results[1].frame->type);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_crc_matches_known_status_frame_fixture);
@@ -306,5 +348,7 @@ int main(int argc, char **argv) {
   RUN_TEST(test_decode_setup_parameters);
   RUN_TEST(test_decode_fault_log_entry);
   RUN_TEST(test_encode_configuration_request);
+  RUN_TEST(test_stream_parser_keeps_frame_whose_crc_is_the_delimiter);
+  RUN_TEST(test_stream_parser_recovers_after_frame_with_delimiter_crc);
   return UNITY_END();
 }
