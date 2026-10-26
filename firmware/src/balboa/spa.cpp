@@ -196,7 +196,9 @@ void SpaController::writeStateJson(JsonObject out) const {
   } else {
     out["setTemp"] = state_.setTemp;
   }
-  if (!isnan(lastWaterTemp_)) {
+  // Only between readings: with a live reading its time is always "now", and sending that would make every
+  // status frame look like a change to the WebSocket broadcast.
+  if (isnan(state_.waterTemp) && !isnan(lastWaterTemp_)) {
     out["lastWaterTemp"] = lastWaterTemp_;
     out["lastWaterTempAt"] = lastWaterTempAt_;
   }

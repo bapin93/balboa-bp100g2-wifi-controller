@@ -658,8 +658,7 @@ class MockSpa:
             data = {
                 **s,
                 "waterTemp": None if self.water_unknown else round(s["waterTemp"]),
-                "lastWaterTemp": self.last_water if self.water_unknown else round(s["waterTemp"]),
-                "lastWaterTempAt": self.last_water_at if self.water_unknown else int(time.time()),
+                **({"lastWaterTemp": self.last_water, "lastWaterTempAt": self.last_water_at} if self.water_unknown else {}),
                 "jet1": s["jet1Speed"] != 0,
                 "jet2": s["jet2Speed"] != 0,
                 "setTempRange": {"min": 80, "max": 104} if s["tempRangeHigh"] else {"min": 50, "max": 99},
