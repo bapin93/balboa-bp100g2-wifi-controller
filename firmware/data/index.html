@@ -127,6 +127,7 @@
             <div class="form-row"><span class="form-row-label">Jets Ran</span><strong class="form-row-value" id="ovTodayJets">--</strong></div>
             <div class="form-row"><span class="form-row-label">Filtered</span><strong class="form-row-value" id="ovTodayFilter">--</strong></div>
             <div class="form-row"><span class="form-row-label">Heater, 7-Day Avg</span><strong class="form-row-value" id="ovHeaterAvg">--</strong></div>
+            <div class="form-row" id="ovTodayCostRow" hidden><span class="form-row-label">Energy Cost</span><strong class="form-row-value" id="ovTodayCost">--</strong></div>
           </div>
 
           <p class="settings-section-title">Filter Schedule</p>
@@ -165,6 +166,10 @@
             <p class="chart-note" id="dailyNote"></p>
           </div>
 
+          <p class="settings-section-title">Energy Cost</p>
+          <div class="card-form" id="costCard"></div>
+          <p class="form-hint" id="costHint"></p>
+
           <details class="disclosure">
             <summary>
               <span>Daily Numbers</span>
@@ -172,7 +177,7 @@
             </summary>
             <div class="disclosure-body table-body">
               <table class="data-table" id="runtimeTable">
-                <thead><tr><th>Day</th><th>Heater</th><th>Jets</th><th>Filter</th><th>Spa</th><th>Set</th><th>Out</th></tr></thead>
+                <thead><tr><th>Day</th><th>Heater</th><th>Jets</th><th>Filter</th><th>Spa</th><th>Set</th><th>Out</th><th class="cost-col">Cost</th></tr></thead>
                 <tbody></tbody>
               </table>
               <p class="form-hint">Times are hours:minutes. Spa, Set and Out are daily averages in °F. Jets includes the time the spa runs pump 1 to heat and filter. Counted while the controller hears the spa; history restarts when the web files are re-uploaded.</p>
@@ -285,6 +290,7 @@
         <div class="subtabs" role="tablist" aria-label="Settings sections">
           <button class="subtab active" type="button" role="tab" data-subtab="settingsGeneral" aria-selected="true">General</button>
           <button class="subtab" type="button" role="tab" data-subtab="settingsFilters" aria-selected="false">Filters</button>
+          <button class="subtab" type="button" role="tab" data-subtab="settingsEnergy" aria-selected="false">Energy</button>
           <button class="subtab" type="button" role="tab" data-subtab="settingsAbout" aria-selected="false">About</button>
         </div>
 
@@ -409,6 +415,91 @@
               </div>
             </div>
             <p class="form-hint">Filter cycles run pump 1 to clean the water. Changes go to the spa right away and are confirmed by reading them back.</p>
+          </div>
+
+          <div class="subpanel" id="settingsEnergy" role="tabpanel">
+            <p class="settings-section-title">Time of Use</p>
+            <div class="card-form">
+              <div class="form-row">
+                <label class="form-row-label" for="touPeakStart">Peak Starts</label>
+                <select class="form-row-input wide" id="touPeakStart"></select>
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="touPeakEnd">Peak Ends</label>
+                <select class="form-row-input wide" id="touPeakEnd"></select>
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="touWeekends">Weekends Off-Peak</label>
+                <label class="switch">
+                  <input type="checkbox" id="touWeekends" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="touHolidays">Holidays Off-Peak</label>
+                <select class="form-row-input wide" id="touHolidays">
+                  <option value="federal">Federal (11)</option>
+                  <option value="federal10">Federal, no Juneteenth (10)</option>
+                  <option value="nerc">NERC (6)</option>
+                  <option value="none">None</option>
+                </select>
+              </div>
+            </div>
+            <p class="form-hint">Federal counts all 11 US federal holidays; some rate schedules still leave out Juneteenth. NERC is the shorter list many utilities use: New Year's, Memorial Day, July 4, Labor Day, Thanksgiving and Christmas. Check your rate schedule.</p>
+
+            <p class="settings-section-title">Rates</p>
+            <div class="card-form">
+              <div class="form-row">
+                <span class="form-row-label">Summer</span>
+                <div class="row-actions">
+                  <select class="form-row-input period" id="rateSummerStart" aria-label="Summer starts"></select>
+                  <span class="time-separator">to</span>
+                  <select class="form-row-input period" id="rateSummerEnd" aria-label="Summer ends"></select>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="rateSummerPeak">Summer On-Peak <span class="row-sub">$/kWh</span></label>
+                <input class="form-row-input" id="rateSummerPeak" type="number" min="0" step="any" inputmode="decimal" placeholder="0.00" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="rateSummerOffPeak">Summer Off-Peak <span class="row-sub">$/kWh</span></label>
+                <input class="form-row-input" id="rateSummerOffPeak" type="number" min="0" step="any" inputmode="decimal" placeholder="0.00" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="rateWinterPeak">Winter On-Peak <span class="row-sub">$/kWh</span></label>
+                <input class="form-row-input" id="rateWinterPeak" type="number" min="0" step="any" inputmode="decimal" placeholder="0.00" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="rateWinterOffPeak">Winter Off-Peak <span class="row-sub">$/kWh</span></label>
+                <input class="form-row-input" id="rateWinterOffPeak" type="number" min="0" step="any" inputmode="decimal" placeholder="0.00" />
+              </div>
+            </div>
+            <p class="form-hint">Use the energy charge per kWh from your bill. Fixed monthly fees aren't included.</p>
+
+            <p class="settings-section-title">Equipment Power</p>
+            <div class="card-form">
+              <div class="form-row">
+                <label class="form-row-label" for="powerHeaterKw">Heater <span class="row-sub">kW</span></label>
+                <input class="form-row-input" id="powerHeaterKw" type="number" min="0" step="any" inputmode="decimal" placeholder="4.0" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="powerPump1LowKw">Jet 1 Low <span class="row-sub">kW</span></label>
+                <input class="form-row-input" id="powerPump1LowKw" type="number" min="0" step="any" inputmode="decimal" placeholder="0.5" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="powerPump1HighKw">Jet 1 High <span class="row-sub">kW</span></label>
+                <input class="form-row-input" id="powerPump1HighKw" type="number" min="0" step="any" inputmode="decimal" placeholder="1.8" />
+              </div>
+              <div class="form-row" id="pump2PowerRow">
+                <label class="form-row-label" for="powerPump2Kw">Jet 2 <span class="row-sub">kW</span></label>
+                <input class="form-row-input" id="powerPump2Kw" type="number" min="0" step="any" inputmode="decimal" placeholder="1.5" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="powerStandbyW">Standby <span class="row-sub">W</span></label>
+                <input class="form-row-input" id="powerStandbyW" type="number" min="0" max="1000" step="1" inputmode="numeric" placeholder="30" />
+              </div>
+            </div>
+            <p class="form-hint">From the labels: heater kW is printed on it; for a pump, amps × volts × 0.9 ÷ 1000 is a good estimate. Standby covers the control board and ozonator and is counted all day. Costs are estimates and show on Stats once rates are set.</p>
           </div>
         </form>
 

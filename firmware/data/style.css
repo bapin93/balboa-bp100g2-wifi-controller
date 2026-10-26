@@ -646,6 +646,8 @@ h1 {
 
 .task-list .maint-empty { border: none; }
 
+.data-table.no-cost .cost-col { display: none; }
+
 .badge.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-dim); }
 .form-row-value.bad { color: var(--danger); }
 .row-sub { color: var(--muted); font-size: 12px; }

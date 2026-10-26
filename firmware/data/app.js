@@ -268,6 +268,8 @@ function renderOverviewToday() {
   } else {
     setValue("ovHeaterAvg", "Not enough history", true);
   }
+  $("#ovTodayCostRow").hidden = !ratesSet() || !today;
+  if (ratesSet() && today) setValue("ovTodayCost", costText(dayEnergy(today)));
 }
 
 function filterSummary(values) {
@@ -328,6 +330,7 @@ function renderState(data) {
   const caps = data.capabilities || {};
   $("#syncTime").hidden = caps.setTime === false;
   $("#equipmentSection").hidden = !caps.pump2Installed;
+  $("#pump2PowerRow").hidden = !caps.pump2Installed || !!state.config?.capabilities?.hideJet2;
   $$("[data-action]").forEach((button) => {
     const action = button.dataset.action;
     button.hidden = caps[action] === false;
@@ -927,7 +930,7 @@ function renderRuntime() {
   if (!days.length) {
     const row = body.insertRow();
     const cell = row.insertCell();
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     cell.className = "empty";
     cell.textContent = "No runtime recorded yet";
   }
@@ -940,7 +943,12 @@ function renderRuntime() {
      hoursMinutesShort(day.filterSec), temp(day.waterTemp), temp(day.setTemp), temp(out)].forEach((text) => {
       row.insertCell().textContent = text;
     });
+    const cost = row.insertCell();
+    cost.className = "cost-col";
+    cost.textContent = ratesSet() ? moneyText(dayEnergy(day).cost) : "";
   });
+  $("#runtimeTable").classList.toggle("no-cost", !ratesSet());
+  renderCostCard();
   if ($("#statsRuntime").classList.contains("active") && $("#stats").classList.contains("active")) {
     renderHoursChart();
     renderDailyChart();
@@ -1329,6 +1337,7 @@ function applyConfig(config) {
   field(form, "showJet2").checked = !caps.hideJet2;
   field(form, "latitude").value = state.config.location ? state.config.location.lat : "";
   field(form, "longitude").value = state.config.location ? state.config.location.lon : "";
+  fillEnergySettings(config);
   refreshWeatherForLocation();
 }
 
@@ -2294,6 +2303,152 @@ function setupTempRange() {
   });
 }
 
+// ── energy cost ──
+
+const MonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const RateFields = { rateSummerPeak: "summerPeak", rateSummerOffPeak: "summerOffPeak",
+  rateWinterPeak: "winterPeak", rateWinterOffPeak: "winterOffPeak" };
+const PowerFields = { powerHeaterKw: "heaterKw", powerPump1LowKw: "pump1LowKw", powerPump1HighKw: "pump1HighKw",
+  powerPump2Kw: "pump2Kw", powerStandbyW: "standbyW" };
+
+function ratesSet() {
+  const rates = state.config?.tou?.rates;
+  return !!rates && Object.values(RateFields).some((key) => rates[key] > 0);
+}
+
+function moneyText(value) {
+  return `$${value.toFixed(2)}`;
+}
+
+function costText(energy) {
+  return `${moneyText(energy.cost)} · ${energy.kwh.toFixed(1)} kWh`;
+}
+
+function isSummer(date, rates) {
+  const month = Math.floor(date / 100) % 100;
+  const { summerStartMonth: from, summerEndMonth: to } = rates;
+  return from <= to ? month >= from && month <= to : month >= from || month <= to;
+}
+
+// Estimated energy and cost for one runtime day, split by load and by peak/off-peak. Days recorded
+// before peak tracking have no peak fields and count as all off-peak.
+function dayEnergy(day) {
+  const { tou: { rates }, power } = state.config;
+  const summer = isSummer(day.date, rates);
+  const peakRate = summer ? rates.summerPeak : rates.winterPeak;
+  const offRate = summer ? rates.summerOffPeak : rates.winterOffPeak;
+  const loads = {
+    heater: [[day.heatingSec, day.heatingPeakSec, power.heaterKw]],
+    jets: [[day.pumpLowSec, day.pumpLowPeakSec, power.pump1LowKw], [day.pumpHighSec, day.pumpHighPeakSec, power.pump1HighKw],
+      [day.pump2Sec, day.pump2PeakSec, power.pump2Kw]],
+    standby: [[day.countedSec, day.countedPeakSec, power.standbyW / 1000]],
+  };
+  const result = { kwh: 0, cost: 0, peakCost: 0, parts: {} };
+  Object.entries(loads).forEach(([name, parts]) => {
+    result.parts[name] = 0;
+    parts.forEach(([total = 0, peak = 0, kw]) => {
+      const peakKwh = (peak / 3600) * kw;
+      const offKwh = (Math.max(0, total - peak) / 3600) * kw;
+      const cost = peakKwh * peakRate + offKwh * offRate;
+      result.kwh += peakKwh + offKwh;
+      result.cost += cost;
+      result.peakCost += peakKwh * peakRate;
+      result.parts[name] += cost;
+    });
+  });
+  return result;
+}
+
+function sumEnergy(days) {
+  return days.map(dayEnergy).reduce((sum, day) => {
+    sum.kwh += day.kwh;
+    sum.cost += day.cost;
+    sum.peakCost += day.peakCost;
+    Object.entries(day.parts).forEach(([name, cost]) => { sum.parts[name] = (sum.parts[name] || 0) + cost; });
+    return sum;
+  }, { kwh: 0, cost: 0, peakCost: 0, parts: {} });
+}
+
+function renderCostCard() {
+  const days = state.runtimeDays || [];
+  if (!ratesSet()) {
+    $("#costCard").replaceChildren(maintRow("Enter your rates in Settings → Energy", "", "muted"));
+    $("#costHint").textContent = "";
+    return;
+  }
+  const now = new Date();
+  const todayDate = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+  const monthStart = Math.floor(todayDate / 100) * 100;
+  const today = days.filter((day) => day.date === todayDate);
+  const month = days.filter((day) => day.date > monthStart);
+  const recent = sumEnergy(days);
+  const share = recent.cost ? Math.round((recent.peakCost / recent.cost) * 100) : 0;
+  const parts = recent.parts;
+  $("#costCard").replaceChildren(
+    maintRow("Today", costText(sumEnergy(today))),
+    maintRow("This Month", costText(sumEnergy(month))),
+    maintRow(`Last ${days.length} Days`, costText(recent)),
+    maintRow("On-Peak Share", `${share}% of cost`, share > 25 ? "due" : ""),
+    ...[["Heater", parts.heater], ["Jets", parts.jets], ["Standby", parts.standby]]
+      .map(([label, cost]) => maintRow(`${label}, ${days.length} days`, moneyText(cost || 0), "muted")),
+  );
+  $("#costHint").textContent = "Estimated from run time and the rates and power figures in Settings → Energy; " +
+    "changing them reprices past days too. Time before peak tracking began counts as off-peak.";
+}
+
+function renderCosts() {
+  if (state.runtimeDays) {
+    renderOverviewToday();
+    renderRuntime();
+  }
+}
+
+function fillEnergySettings(config) {
+  const tou = config.tou || {};
+  const rates = tou.rates || {};
+  const power = config.power || {};
+  $("#touPeakStart").value = String(tou.peakStart ?? 17);
+  $("#touPeakEnd").value = String(tou.peakEnd ?? 21);
+  $("#touWeekends").checked = tou.weekendsOffPeak !== false;
+  $("#touHolidays").value = tou.holidays || "federal";
+  $("#rateSummerStart").value = String(rates.summerStartMonth ?? 6);
+  $("#rateSummerEnd").value = String(rates.summerEndMonth ?? 9);
+  Object.entries(RateFields).forEach(([id, key]) => { $(`#${id}`).value = rates[key] ? rates[key] : ""; });
+  Object.entries(PowerFields).forEach(([id, key]) => { $(`#${id}`).value = power[key] ?? ""; });
+}
+
+function setupEnergySettings() {
+  const options = (select, values, label) => select.replaceChildren(...values.map((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = label(value);
+    return option;
+  }));
+  const hours = Array.from({ length: 24 }, (_, hour) => hour);
+  options($("#touPeakStart"), hours, (hour) => clock12Label(hour));
+  options($("#touPeakEnd"), hours.map((hour) => hour + 1), (hour) => (hour === 24 ? "12:00 AM (midnight)" : clock12Label(hour)));
+  [$("#rateSummerStart"), $("#rateSummerEnd")].forEach((select) => options(select, MonthNames.map((_, i) => i + 1), (month) => MonthNames[month - 1]));
+
+  $("#touPeakStart").addEventListener("change", (event) => saveConfig({ tou: { peakStart: Number(event.target.value) } }));
+  $("#touPeakEnd").addEventListener("change", (event) => saveConfig({ tou: { peakEnd: Number(event.target.value) } }));
+  $("#touWeekends").addEventListener("change", (event) => saveConfig({ tou: { weekendsOffPeak: event.target.checked } }));
+  $("#touHolidays").addEventListener("change", (event) => saveConfig({ tou: { holidays: event.target.value } }));
+  $("#rateSummerStart").addEventListener("change", (event) => saveConfig({ tou: { rates: { summerStartMonth: Number(event.target.value) } } }));
+  $("#rateSummerEnd").addEventListener("change", (event) => saveConfig({ tou: { rates: { summerEndMonth: Number(event.target.value) } } }));
+  const numberField = (id, save) => $(`#${id}`).addEventListener("change", (event) => {
+    const text = event.target.value.trim();
+    const value = text === "" ? 0 : Number(text);
+    if (!Number.isFinite(value) || value < 0) {
+      showToast("Enter a number of 0 or more");
+      return;
+    }
+    save(value);
+  });
+  Object.entries(RateFields).forEach(([id, key]) => numberField(id, (value) => saveConfig({ tou: { rates: { [key]: value } } }, "Rate saved")));
+  Object.entries(PowerFields).forEach(([id, key]) => numberField(id, (value) =>
+    saveConfig({ power: { [key]: key === "standbyW" ? Math.round(value) : value } }, "Power saved")));
+}
+
 // ── settings auto-save ──
 
 // Sends only the changed fields; the controller keeps everything else as it was.
@@ -2302,6 +2457,7 @@ async function saveConfig(changes, savedText = "Saved") {
     const message = await requestJson("/api/config", { method: "POST", body: JSON.stringify(changes) });
     state.config = message.data;
     showToast(savedText);
+    renderCosts();
     return true;
   } catch (error) {
     showToast(error.message);
@@ -2538,6 +2694,7 @@ function setupEvents() {
   });
 
   setupAutoSaveSettings();
+  setupEnergySettings();
   // Every setting saves on its own; Enter in a field must not submit the form.
   $("#settingsForm").addEventListener("submit", (event) => event.preventDefault());
 }

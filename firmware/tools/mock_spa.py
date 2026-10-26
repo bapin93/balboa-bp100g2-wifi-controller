@@ -81,6 +81,11 @@ class MockSpa:
             "timezone": "MST7MDT,M3.2.0/2,M11.1.0/2", "authEnabled": False, "authPasswordSet": False,
             "capabilities": {"setTime": True, "hideJet2": False},
             "location": dict(zip(("lat", "lon"), map(float, args.location.split(",")))) if args.location else None,
+            # A sample TOU plan so the cost views have something to show.
+            "tou": {"peakStart": 17, "peakEnd": 21, "weekendsOffPeak": True, "holidays": "federal10",
+                    "rates": {"summerStartMonth": 6, "summerEndMonth": 9, "summerPeak": 0.21277,
+                              "summerOffPeak": 0.07884, "winterPeak": 0.18331, "winterOffPeak": 0.06792}},
+            "power": {"heaterKw": 5.5, "pump1LowKw": 0.5, "pump1HighKw": 1.8, "pump2Kw": 1.5, "standbyW": 30},
         }
         self.water_unknown = False  # like a real spa between pump runs: true temp simulated, not reported
         self.last_water = None      # last reported reading and when, as the firmware keeps it
@@ -345,18 +350,38 @@ class MockSpa:
             set_temp = 96.0 if outside < 46 else 100.0
             water = round(set_temp - random.uniform(0.0, 1.0), 1)
             minutes = max(10, min(360, 2.2 * (water - outside) - 20 + random.gauss(0, 6)))
+            weekday = day.weekday() < 5
+            heating, low, high = int(minutes * 60), random.randint(300, 600) * 60, random.randint(0, 45) * 60
             days.append({
                 "date": key,
-                "heatingSec": int(minutes * 60),
-                "pumpLowSec": random.randint(300, 600) * 60,
-                "pumpHighSec": random.randint(0, 45) * 60,
+                "heatingSec": heating,
+                "pumpLowSec": low,
+                "pumpHighSec": high,
                 "filterSec": 6 * 3600,
+                "pump2Sec": 0,
+                "countedSec": 86400,
+                # On weekdays a slice of the running lands in the 5-9 PM peak.
+                "heatingPeakSec": int(heating * random.uniform(0.05, 0.2)) if weekday else 0,
+                "pumpLowPeakSec": int(low * random.uniform(0.05, 0.2)) if weekday else 0,
+                "pumpHighPeakSec": int(high * random.uniform(0.3, 0.8)) if weekday else 0,
+                "pump2PeakSec": 0,
+                "countedPeakSec": 4 * 3600 if weekday else 0,
                 "waterTemp": water,
                 "setTemp": set_temp,
             })
-        days.append({"date": int(today.strftime("%Y%m%d")), "heatingSec": 0, "pumpLowSec": 0,
-                     "pumpHighSec": 0, "filterSec": 0})
+        days.append(self._empty_day(today))
         return days
+
+    @staticmethod
+    def _empty_day(day):
+        return {"date": int(day.strftime("%Y%m%d")), **{key: 0 for key in (
+            "heatingSec", "pumpLowSec", "pumpHighSec", "filterSec", "pump2Sec", "countedSec", "heatingPeakSec",
+            "pumpLowPeakSec", "pumpHighPeakSec", "pump2PeakSec", "countedPeakSec")}}
+
+    def _in_peak(self):
+        """Weekday peak hours from the config; holidays aren't simulated."""
+        now, tou = datetime.now(), self.config["tou"]
+        return now.weekday() < 5 and tou["peakStart"] <= now.hour < tou["peakEnd"]
 
     def _fake_hours(self):
         # The water loses heat faster when it's colder outside; the heater tops it back up to the set point.
@@ -422,8 +447,7 @@ class MockSpa:
 
             today = self.runtime[-1]
             if today["date"] != int(date.today().strftime("%Y%m%d")):
-                self.runtime.append({"date": int(date.today().strftime("%Y%m%d")), "heatingSec": 0,
-                                     "pumpLowSec": 0, "pumpHighSec": 0, "filterSec": 0})
+                self.runtime.append(self._empty_day(date.today()))
                 self.runtime = self.runtime[-30:]
                 today = self.runtime[-1]
             if s["jet1Speed"] > 0:
@@ -445,9 +469,12 @@ class MockSpa:
                 today["waterTemp"] = round(s["waterTemp"], 1)
             hour["setTemp"] = s["setTemp"]
             today["setTemp"] = s["setTemp"]
-            today["heatingSec"] += dt if s["heating"] else 0
-            today["pumpLowSec"] += dt if s["jet1Speed"] == 1 else 0
-            today["pumpHighSec"] += dt if s["jet1Speed"] == 2 else 0
+            peak = self._in_peak()
+            for key, running in (("heating", s["heating"]), ("pumpLow", s["jet1Speed"] == 1),
+                                 ("pumpHigh", s["jet1Speed"] == 2), ("pump2", s["jet2Speed"] > 0), ("counted", True)):
+                if running:
+                    today[f"{key}Sec"] += dt
+                    today[f"{key}PeakSec"] += dt if peak else 0
             today["filterSec"] += dt if s["activeFilterCycle"] else 0
 
             self._step_pump_command(now_m)
@@ -673,6 +700,10 @@ class MockSpa:
             if body.get("authPassword"):
                 self.config["authPasswordSet"] = True
             self.config["capabilities"].update(body.get("capabilities", {}))
+            tou = body.get("tou", {})
+            self.config["tou"]["rates"].update(tou.pop("rates", {}))
+            self.config["tou"].update(tou)
+            self.config["power"].update(body.get("power", {}))
 
     def force(self, fields):
         """POST /mock: overwrite any state field, plus a few extras."""

@@ -173,6 +173,13 @@ void WebServerHub::setupRoutes() {
         item["pumpLowSec"] = day.pumpLowSec;
         item["pumpHighSec"] = day.pumpHighSec;
         item["filterSec"] = day.filterSec;
+        item["pump2Sec"] = day.pump2Sec;
+        item["countedSec"] = day.countedSec;
+        item["heatingPeakSec"] = day.heatingPeakSec;
+        item["pumpLowPeakSec"] = day.pumpLowPeakSec;
+        item["pumpHighPeakSec"] = day.pumpHighPeakSec;
+        item["pump2PeakSec"] = day.pump2PeakSec;
+        item["countedPeakSec"] = day.countedPeakSec;
         if (day.waterTempSec) {
           item["waterTemp"] = roundf(day.waterTempAvg * 10.0f) / 10.0f;
         }

@@ -30,13 +30,23 @@ bool RuntimeLog::add(uint32_t date, uint32_t hourStart, uint32_t elapsedSec, con
   }
 
   RuntimeDay &today = days_.back();
+  const uint32_t peakSec = sample.peak ? elapsedSec : 0;
+  today.countedSec += elapsedSec;
+  today.countedPeakSec += peakSec;
   if (sample.heating) {
     today.heatingSec += elapsedSec;
+    today.heatingPeakSec += peakSec;
   }
   if (sample.pump1Speed == 1) {
     today.pumpLowSec += elapsedSec;
+    today.pumpLowPeakSec += peakSec;
   } else if (sample.pump1Speed == 2) {
     today.pumpHighSec += elapsedSec;
+    today.pumpHighPeakSec += peakSec;
+  }
+  if (sample.pump2Speed > 0) {
+    today.pump2Sec += elapsedSec;
+    today.pump2PeakSec += peakSec;
   }
   if (sample.filterRunning) {
     today.filterSec += elapsedSec;

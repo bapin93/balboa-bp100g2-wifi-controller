@@ -126,6 +126,46 @@ void test_location_set_clear_and_validate() {
   TEST_ASSERT_TRUE(kept.hasLocation);
 }
 
+void test_tou_rates_and_power() {
+  DeviceConfig current;
+  DeviceConfig next;
+  const char *error = nullptr;
+
+  JsonDocument doc;
+  doc["tou"]["holidays"] = "nerc";
+  doc["tou"]["weekendsOffPeak"] = false;
+  doc["tou"]["rates"]["summerPeak"] = 0.21277;
+  doc["power"]["heaterKw"] = 5.5;
+  doc["power"]["standbyW"] = 40;
+  TEST_ASSERT_TRUE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
+  TEST_ASSERT_EQUAL(HolidaySet::Nerc, next.tou.holidays);
+  TEST_ASSERT_FALSE(next.tou.weekendsOffPeak);
+  TEST_ASSERT_EQUAL_UINT8(17, next.tou.peakStart);  // untouched
+  TEST_ASSERT_EQUAL_FLOAT(0.21277f, next.rates.summerPeak);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, next.rates.winterPeak);
+  TEST_ASSERT_EQUAL_FLOAT(5.5f, next.power.heaterKw);
+  TEST_ASSERT_EQUAL_UINT16(40, next.power.standbyW);
+
+  // Survives the save/load round trip.
+  JsonDocument saved;
+  configToJson(next, saved.to<JsonObject>());
+  DeviceConfig loaded;
+  configFromJson(saved.as<JsonVariantConst>(), loaded);
+  TEST_ASSERT_EQUAL(HolidaySet::Nerc, loaded.tou.holidays);
+  TEST_ASSERT_EQUAL_FLOAT(0.21277f, loaded.rates.summerPeak);
+  TEST_ASSERT_EQUAL_FLOAT(5.5f, loaded.power.heaterKw);
+
+  JsonDocument bad;
+  bad["tou"]["peakStart"] = 24;
+  TEST_ASSERT_FALSE(validateConfigJson(bad.as<JsonVariantConst>(), current, next, &error));
+  JsonDocument badRate;
+  badRate["tou"]["rates"]["winterOffPeak"] = -0.1;
+  TEST_ASSERT_FALSE(validateConfigJson(badRate.as<JsonVariantConst>(), current, next, &error));
+  JsonDocument badHoliday;
+  badHoliday["tou"]["holidays"] = "bank";
+  TEST_ASSERT_FALSE(validateConfigJson(badHoliday.as<JsonVariantConst>(), current, next, &error));
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_valid_config_updates_capabilities);
@@ -134,5 +174,6 @@ int main(int argc, char **argv) {
   RUN_TEST(test_rejects_bad_filter_cycle_minute);
   RUN_TEST(test_rejects_long_timezone);
   RUN_TEST(test_location_set_clear_and_validate);
+  RUN_TEST(test_tou_rates_and_power);
   return UNITY_END();
 }

@@ -4,6 +4,8 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 
+#include <utility>
+
 #include "config.h"
 
 bool Store::begin() {
@@ -74,6 +76,13 @@ void Store::loadRuntime(RuntimeLog &log) {
     day.pumpLowSec = item["l"] | 0;
     day.pumpHighSec = item["p"] | 0;
     day.filterSec = item["f"] | 0;
+    day.pump2Sec = item["2"] | 0;
+    day.countedSec = item["c"] | 0;
+    day.heatingPeakSec = item["hP"] | 0;
+    day.pumpLowPeakSec = item["lP"] | 0;
+    day.pumpHighPeakSec = item["pP"] | 0;
+    day.pump2PeakSec = item["2P"] | 0;
+    day.countedPeakSec = item["cP"] | 0;
     day.waterTempAvg = item["w"] | NAN;
     day.waterTempSec = item["ws"] | 0;
     day.setTempAvg = item["s"] | NAN;
@@ -113,6 +122,16 @@ bool Store::saveRuntime(const RuntimeLog &log) {
     item["l"] = day.pumpLowSec;
     item["p"] = day.pumpHighSec;
     item["f"] = day.filterSec;
+    // Peak splits; capital P marks the on-peak part. Zero is left out to keep the file small.
+    const std::pair<const char *, uint32_t> extras[] = {
+        {"2", day.pump2Sec},          {"c", day.countedSec},        {"hP", day.heatingPeakSec},
+        {"lP", day.pumpLowPeakSec},   {"pP", day.pumpHighPeakSec},  {"2P", day.pump2PeakSec},
+        {"cP", day.countedPeakSec}};
+    for (const auto &extra : extras) {
+      if (extra.second) {
+        item[extra.first] = extra.second;
+      }
+    }
     if (day.waterTempSec) {
       item["w"] = day.waterTempAvg;
       item["ws"] = day.waterTempSec;

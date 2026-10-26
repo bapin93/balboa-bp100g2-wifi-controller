@@ -25,6 +25,30 @@ void test_accumulates_by_state() {
   TEST_ASSERT_EQUAL_UINT32(5, day.filterSec);
 }
 
+void test_splits_peak_time() {
+  RuntimeLog log;
+  RuntimeSample offPeak;
+  offPeak.heating = true;
+  offPeak.pump1Speed = 1;
+  RuntimeSample peakJets = offPeak;
+  peakJets.pump1Speed = 2;
+  peakJets.pump2Speed = 1;
+  peakJets.peak = true;
+
+  log.add(20261026, H0, 60, offPeak);
+  log.add(20261026, H0, 20, peakJets);
+  const RuntimeDay &day = log.days().back();
+  TEST_ASSERT_EQUAL_UINT32(80, day.heatingSec);
+  TEST_ASSERT_EQUAL_UINT32(20, day.heatingPeakSec);
+  TEST_ASSERT_EQUAL_UINT32(60, day.pumpLowSec);
+  TEST_ASSERT_EQUAL_UINT32(0, day.pumpLowPeakSec);
+  TEST_ASSERT_EQUAL_UINT32(20, day.pumpHighPeakSec);
+  TEST_ASSERT_EQUAL_UINT32(20, day.pump2Sec);
+  TEST_ASSERT_EQUAL_UINT32(20, day.pump2PeakSec);
+  TEST_ASSERT_EQUAL_UINT32(80, day.countedSec);
+  TEST_ASSERT_EQUAL_UINT32(20, day.countedPeakSec);
+}
+
 void test_new_day_starts_fresh_and_keeps_history() {
   RuntimeLog log;
   RuntimeSample heating;
@@ -99,6 +123,7 @@ void test_hours_roll_and_cap() {
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_accumulates_by_state);
+  RUN_TEST(test_splits_peak_time);
   RUN_TEST(test_new_day_starts_fresh_and_keeps_history);
   RUN_TEST(test_history_is_capped);
   RUN_TEST(test_load_then_continue_today);

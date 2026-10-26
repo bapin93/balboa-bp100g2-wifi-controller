@@ -11,6 +11,7 @@
 #include "balboa/spa.h"
 #include "config.h"
 #include "network/web_server.h"
+#include "scheduler/tou.h"
 #include "storage/store.h"
 
 // The Arduino core marks a freshly updated firmware "good" as soon as it boots, which disables the
@@ -186,6 +187,15 @@ void confirmFirmwareOnceHealthy() {
 }
 
 // Local date as YYYYMMDD, or 0 until NTP has set the clock.
+bool inPeakNow() {
+  const time_t now = time(nullptr);
+  tm local;
+  if (now < 1700000000 || !localtime_r(&now, &local)) {
+    return false;
+  }
+  return isPeakTime(deviceConfig.tou, {local.tm_year + 1900, local.tm_mon + 1, local.tm_mday}, local.tm_hour);
+}
+
 uint32_t localDate() {
   const time_t now = time(nullptr);
   tm local;
@@ -219,6 +229,8 @@ void trackRuntime() {
   RuntimeSample sample;
   sample.heating = state.heating;
   sample.pump1Speed = state.jet1Speed;
+  sample.pump2Speed = deviceConfig.hideJet2 ? 0 : state.jet2Speed;
+  sample.peak = inPeakNow();
   sample.filterRunning = state.activeFilterCycle != 0;
   sample.waterTemp = state.waterTemp;
   sample.setTemp = state.setTemp;
