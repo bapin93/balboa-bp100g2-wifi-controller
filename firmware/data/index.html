@@ -146,14 +146,38 @@
         </div>
 
         <div class="subpanel" id="statsRuntime" role="tabpanel">
-          <p class="settings-section-title">Daily Runtime · Last 14 Days</p>
-          <div class="card-form">
-            <table class="data-table" id="runtimeTable">
-              <thead><tr><th>Day</th><th>Heater</th><th>Jets Low</th><th>Jets High</th><th>Filter</th></tr></thead>
-              <tbody></tbody>
-            </table>
+          <p class="settings-section-title">Last 48 Hours</p>
+          <div class="chart-card">
+            <div class="chart-legend" id="hoursLegend">
+              <span class="legend-key"><i class="key-line water"></i>Spa water</span>
+              <span class="legend-key"><i class="key-line set"></i>Set</span>
+              <span class="legend-key" id="outsideKey"><i class="key-line outside"></i>Outside</span>
+            </div>
+            <div class="chart" id="hoursChart"></div>
+            <p class="chart-note" id="hoursNote"></p>
           </div>
-          <p class="form-hint">Counted while the controller hears the spa. Jets Low includes the time the spa runs pump 1 to heat and filter. History restarts when the web files are re-uploaded.</p>
+
+          <p class="settings-section-title">Last 14 Days</p>
+          <div class="chart-card">
+            <p class="chart-summary" id="dailySummary"></p>
+            <p class="chart-caption">How long the heater ran each day, with that day's average outside temperature below.</p>
+            <div class="chart" id="dailyChart"></div>
+            <p class="chart-note" id="dailyNote"></p>
+          </div>
+
+          <details class="disclosure">
+            <summary>
+              <span>Daily Numbers</span>
+              <span class="disclosure-meta">Last 14 days</span>
+            </summary>
+            <div class="disclosure-body table-body">
+              <table class="data-table" id="runtimeTable">
+                <thead><tr><th>Day</th><th>Heater</th><th>Jets</th><th>Filter</th><th>Spa</th><th>Set</th><th>Out</th></tr></thead>
+                <tbody></tbody>
+              </table>
+              <p class="form-hint">Times are hours:minutes. Spa, Set and Out are daily averages in °F. Jets includes the time the spa runs pump 1 to heat and filter. Counted while the controller hears the spa; history restarts when the web files are re-uploaded.</p>
+            </div>
+          </details>
         </div>
 
         <div class="subpanel" id="statsDiagnostics" role="tabpanel">
@@ -195,22 +219,35 @@
 
       <!-- Maintenance -->
       <section id="maintenance" class="view">
-        <div class="section-header">
-          <p class="settings-section-title">Tasks</p>
-          <button id="addTask" class="row-btn" type="button">+ Add Task</button>
+        <div class="subtabs" role="tablist" aria-label="Maintenance sections">
+          <button class="subtab active" type="button" role="tab" data-subtab="maintTasks" aria-selected="true">Tasks</button>
+          <button class="subtab" type="button" role="tab" data-subtab="maintFilters" aria-selected="false">Filters</button>
         </div>
-        <div class="card-form task-list" id="taskList"></div>
 
-        <div class="section-header">
-          <p class="settings-section-title">Filters</p>
-          <button id="addFilter" class="row-btn" type="button">+ Add Filter</button>
+        <div class="subpanel active" id="maintTasks" role="tabpanel">
+          <div class="section-header">
+            <p class="settings-section-title">Tasks</p>
+            <button id="addTask" class="row-btn" type="button">+ Add Task</button>
+          </div>
+          <div class="card-form task-list" id="taskList"></div>
+
+          <p class="settings-section-title">History</p>
+          <ul class="fault-list" id="taskHistory"></ul>
+          <button class="pill-btn btn-full" id="taskHistoryToggle" type="button" hidden>Show all</button>
         </div>
-        <div class="maint-cards" id="filterCards"></div>
-        <p class="form-hint">Pumped is the time pump 1 moved water through the filter — filter cycles, heating and jets. Many makers suggest a rinse every 2–4 weeks in the tub; check your filter's instructions.</p>
 
-        <p class="settings-section-title">History</p>
-        <ul class="fault-list" id="maintHistory"></ul>
-        <button class="pill-btn btn-full" id="maintHistoryToggle" type="button" hidden>Show all</button>
+        <div class="subpanel" id="maintFilters" role="tabpanel">
+          <div class="section-header">
+            <p class="settings-section-title">Filters</p>
+            <button id="addFilter" class="row-btn" type="button">+ Add Filter</button>
+          </div>
+          <div class="maint-cards" id="filterCards"></div>
+          <p class="form-hint">Pumped is the time pump 1 moved water through the filter — filter cycles, heating and jets. Many makers suggest a rinse every 2–4 weeks in the tub; check your filter's instructions.</p>
+
+          <p class="settings-section-title">History</p>
+          <ul class="fault-list" id="filterHistory"></ul>
+          <button class="pill-btn btn-full" id="filterHistoryToggle" type="button" hidden>Show all</button>
+        </div>
       </section>
 
       <!-- Settings -->
@@ -250,6 +287,37 @@
             </div>
             <p class="form-hint">Sync sets the spa clock from the controller's internet time, in this timezone.</p>
 
+            <p class="settings-section-title">Location</p>
+            <div class="card-form">
+              <div class="form-row">
+                <label class="form-row-label" for="locLat">Latitude</label>
+                <input class="form-row-input wide" id="locLat" name="latitude" inputmode="decimal" autocomplete="off" placeholder="e.g. 39.74" />
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="locLon">Longitude</label>
+                <input class="form-row-input wide" id="locLon" name="longitude" inputmode="decimal" autocomplete="off" placeholder="e.g. -104.99" />
+              </div>
+              <div class="form-row" id="useLocationRow" hidden>
+                <span class="form-row-label">This device's location</span>
+                <button class="row-btn" id="useLocation" type="button">Use</button>
+              </div>
+            </div>
+            <p class="form-hint">Used for outside temperature on Stats → Runtime. Your browser sends only these coordinates to Open-Meteo. Leave both blank to turn it off.</p>
+
+            <div id="equipmentSection" hidden>
+              <p class="settings-section-title">Equipment</p>
+              <div class="card-form">
+                <div class="form-row">
+                  <label class="form-row-label" for="showJet2">Show Jet 2</label>
+                  <label class="switch">
+                    <input type="checkbox" id="showJet2" name="showJet2" />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+              <p class="form-hint">Your spa's control board is set up for a second pump. Turn this off if your tub doesn't have one.</p>
+            </div>
+
             <p class="settings-section-title">Security</p>
             <div class="card-form">
               <div class="form-row">
@@ -270,75 +338,34 @@
           </div>
 
           <div class="subpanel" id="settingsFilters" role="tabpanel">
-            <p class="settings-section-title">Filter 1</p>
-            <div class="card-form">
-              <div class="form-row">
-                <label class="form-row-label" for="f1StartHour">Start</label>
-                <div class="time-control">
-                  <select class="form-row-input compact" id="f1StartHour" name="filterCycle1StartHour12" aria-label="Filter 1 start hour"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
-                  <span class="time-separator">:</span>
-                  <select class="form-row-input compact" id="f1StartMin" name="filterCycle1StartMinute" aria-label="Filter 1 start minute"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
-                  <select class="form-row-input period" id="f1StartPeriod" name="filterCycle1StartPeriod" aria-label="Filter 1 start period">
-                    <option value="AM">AM</option>
-                    <option value="PM">PM</option>
-                  </select>
-                </div>
-              </div>
-              <div class="form-row">
-                <label class="form-row-label" for="f1Dur">Run Time</label>
-                <div class="time-control">
-                  <select class="form-row-input compact" id="f1Dur" name="filterCycle1Duration" aria-label="Filter 1 runtime hours"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option></select>
-                  <span class="time-separator">h</span>
-                  <select class="form-row-input compact" id="f1DurMin" name="filterCycle1DurationMinute" aria-label="Filter 1 runtime minutes"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
-                  <span class="time-separator">m</span>
-                </div>
-              </div>
-              <div class="form-row">
-                <span class="form-row-label">Ends</span>
-                <strong class="form-row-value" id="f1EndTime">--</strong>
-              </div>
+            <p class="settings-section-title">Schedule</p>
+            <div class="filter-timeline" aria-hidden="true">
+              <div class="timeline-track" id="timelineTrack"></div>
+              <div class="timeline-labels"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
             </div>
-            <button id="applyFilter1" class="pill-btn accent btn-full" type="button">Apply Filter 1</button>
 
-            <p class="settings-section-title">Filter 2</p>
+            <p class="settings-section-title">Filter Cycles</p>
             <div class="card-form">
-              <div class="form-row">
-                <label class="form-row-label" for="f2Enabled">Enabled</label>
+              <div class="form-row cycle-row">
+                <div class="cycle-info">
+                  <span class="task-name">Filter 1</span>
+                  <span class="task-meta" id="filter1Summary">--</span>
+                </div>
+                <button class="row-btn" id="editFilter1" type="button">Edit</button>
+              </div>
+              <div class="form-row cycle-row">
+                <div class="cycle-info">
+                  <span class="task-name">Filter 2</span>
+                  <span class="task-meta" id="filter2Summary">--</span>
+                </div>
                 <label class="switch">
-                  <input type="checkbox" id="f2Enabled" name="filterCycle2Enabled" />
+                  <input type="checkbox" id="filter2Toggle" aria-label="Filter 2 on" />
                   <span class="switch-slider"></span>
                 </label>
-              </div>
-              <div class="filter-fields" id="filter2Fields">
-                <div class="form-row">
-                  <label class="form-row-label" for="f2StartHour">Start</label>
-                  <div class="time-control">
-                    <select class="form-row-input compact" id="f2StartHour" name="filterCycle2StartHour12" aria-label="Filter 2 start hour"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
-                    <span class="time-separator">:</span>
-                    <select class="form-row-input compact" id="f2StartMin" name="filterCycle2StartMinute" aria-label="Filter 2 start minute"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
-                    <select class="form-row-input period" id="f2StartPeriod" name="filterCycle2StartPeriod" aria-label="Filter 2 start period">
-                      <option value="AM">AM</option>
-                      <option value="PM">PM</option>
-                    </select>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <label class="form-row-label" for="f2Dur">Run Time</label>
-                  <div class="time-control">
-                    <select class="form-row-input compact" id="f2Dur" name="filterCycle2Duration" aria-label="Filter 2 runtime hours"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option></select>
-                    <span class="time-separator">h</span>
-                    <select class="form-row-input compact" id="f2DurMin" name="filterCycle2DurationMinute" aria-label="Filter 2 runtime minutes"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
-                  <span class="time-separator">m</span>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <span class="form-row-label">Ends</span>
-                  <strong class="form-row-value" id="f2EndTime">--</strong>
-                </div>
+                <button class="row-btn" id="editFilter2" type="button">Edit</button>
               </div>
             </div>
-            <button id="applyFilter2" class="pill-btn accent btn-full" type="button">Apply Filter 2</button>
-            <p class="form-hint">Filter changes are sent to the spa immediately and confirmed by reading them back.</p>
+            <p class="form-hint">Filter cycles run pump 1 to clean the water. Changes go to the spa right away and are confirmed by reading them back.</p>
           </div>
         </form>
 
@@ -398,6 +425,42 @@
           <div class="modal-actions">
             <button class="modal-cancel" id="maintCancel" type="button">Cancel</button>
             <button class="modal-confirm" id="maintConfirm" type="button">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter cycle editor -->
+      <div class="modal-overlay hidden" id="filterSheet">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="filterSheetTitle">
+          <div class="modal-handle"></div>
+          <h2 id="filterSheetTitle">Filter 1</h2>
+          <div class="card-form sheet-fields">
+            <div class="form-row">
+              <label class="form-row-label" for="fsStartHour">Starts</label>
+              <div class="time-control">
+                <select class="form-row-input compact" id="fsStartHour" aria-label="Start hour"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
+                <span class="time-separator">:</span>
+                <select class="form-row-input compact" id="fsStartMinute" aria-label="Start minute"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
+                <select class="form-row-input period" id="fsStartPeriod" aria-label="AM or PM"><option value="AM">AM</option><option value="PM">PM</option></select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label class="form-row-label" for="fsDurHour">Runs For</label>
+              <div class="time-control">
+                <select class="form-row-input compact" id="fsDurHour" aria-label="Run hours"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option></select>
+                <span class="time-separator">h</span>
+                <select class="form-row-input compact" id="fsDurMinute" aria-label="Run minutes"><option value="0">00</option><option value="15">15</option><option value="30">30</option><option value="45">45</option></select>
+                <span class="time-separator">m</span>
+              </div>
+            </div>
+            <div class="form-row">
+              <span class="form-row-label">Ends</span>
+              <strong class="form-row-value" id="fsEnd">--</strong>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="modal-cancel" id="filterSheetCancel" type="button">Cancel</button>
+            <button class="modal-confirm" id="filterSheetSave" type="button">Save</button>
           </div>
         </div>
       </div>

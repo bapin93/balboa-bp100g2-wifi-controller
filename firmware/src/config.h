@@ -12,6 +12,9 @@ constexpr int Rs485TxPin = 17;
 constexpr int Rs485TxEnablePin = 4;
 
 constexpr const char *WifiApName = "BP100G2-Setup";
+constexpr uint32_t WifiRetryIntervalMs = 30UL * 1000UL;
+constexpr uint32_t WifiRestartAfterMs = 15UL * 60UL * 1000UL;  // last resort when WiFi stays down
+constexpr uint8_t WifiPortalAfterFailedBoots = 3;            // then assume the network changed
 constexpr const char *Hostname = "bp100g2-controller";
 
 constexpr const char *ConfigPath = "/config.json";

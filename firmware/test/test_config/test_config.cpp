@@ -13,11 +13,13 @@ void test_valid_config_updates_capabilities() {
   doc["timezone"] = "UTC0";
   JsonObject caps = doc["capabilities"].to<JsonObject>();
   caps["setTime"] = false;
+  caps["hideJet2"] = true;
 
   TEST_ASSERT_TRUE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
   TEST_ASSERT_NULL(error);
   TEST_ASSERT_EQUAL_STRING("UTC0", next.timezone);
   TEST_ASSERT_FALSE(next.setTime);
+  TEST_ASSERT_TRUE(next.hideJet2);
 }
 
 void test_valid_config_updates_filter_cycles() {
@@ -90,6 +92,40 @@ void test_rejects_long_timezone() {
   TEST_ASSERT_NOT_NULL(error);
 }
 
+void test_location_set_clear_and_validate() {
+  DeviceConfig current;
+  DeviceConfig next;
+  const char *error = nullptr;
+
+  JsonDocument set;
+  set["location"]["lat"] = 39.74;
+  set["location"]["lon"] = -104.99;
+  TEST_ASSERT_TRUE(validateConfigJson(set.as<JsonVariantConst>(), current, next, &error));
+  TEST_ASSERT_TRUE(next.hasLocation);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -104.99f, next.longitude);
+
+  JsonDocument out;
+  configToJson(next, out.to<JsonObject>());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 39.74f, out["location"]["lat"].as<float>());
+
+  JsonDocument bad;
+  bad["location"]["lat"] = 120;
+  bad["location"]["lon"] = 0;
+  TEST_ASSERT_FALSE(validateConfigJson(bad.as<JsonVariantConst>(), next, current, &error));
+
+  JsonDocument clear;
+  clear["location"].to<JsonObject>();
+  DeviceConfig cleared;
+  TEST_ASSERT_TRUE(validateConfigJson(clear.as<JsonVariantConst>(), next, cleared, &error));
+  TEST_ASSERT_FALSE(cleared.hasLocation);
+
+  JsonDocument untouched;
+  untouched["timezone"] = "UTC0";
+  DeviceConfig kept;
+  TEST_ASSERT_TRUE(validateConfigJson(untouched.as<JsonVariantConst>(), next, kept, &error));
+  TEST_ASSERT_TRUE(kept.hasLocation);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_valid_config_updates_capabilities);
@@ -97,5 +133,6 @@ int main(int argc, char **argv) {
   RUN_TEST(test_rejects_bad_filter_cycle_start);
   RUN_TEST(test_rejects_bad_filter_cycle_minute);
   RUN_TEST(test_rejects_long_timezone);
+  RUN_TEST(test_location_set_clear_and_validate);
   return UNITY_END();
 }

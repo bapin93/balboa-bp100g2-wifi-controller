@@ -85,9 +85,31 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
     }
   }
 
+  // "location": {"lat", "lon"} sets it; "location": {} clears it.
+  if (input["location"].is<JsonObjectConst>()) {
+    JsonVariantConst location = input["location"];
+    if (location.size() == 0) {
+      next.hasLocation = false;
+    } else if (!location["lat"].is<float>() || !location["lon"].is<float>()) {
+      *error = "location needs a latitude and longitude";
+      return false;
+    } else {
+      const float lat = location["lat"].as<float>();
+      const float lon = location["lon"].as<float>();
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        *error = "latitude must be -90 to 90 and longitude -180 to 180";
+        return false;
+      }
+      next.hasLocation = true;
+      next.latitude = lat;
+      next.longitude = lon;
+    }
+  }
+
   JsonVariantConst caps = input["capabilities"];
   if (caps.is<JsonObjectConst>()) {
     setBoolIfPresent(caps, "setTime", next.setTime);
+    setBoolIfPresent(caps, "hideJet2", next.hideJet2);
   }
 
   JsonVariantConst filters = input["filterCycles"];
@@ -128,8 +150,17 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
   out["authEnabled"] = config.authEnabled;
   out["authPasswordSet"] = strlen(config.authPassword) > 0;
 
+  if (config.hasLocation) {
+    JsonObject location = out["location"].to<JsonObject>();
+    location["lat"] = config.latitude;
+    location["lon"] = config.longitude;
+  } else {
+    out["location"] = nullptr;
+  }
+
   JsonObject caps = out["capabilities"].to<JsonObject>();
   caps["setTime"] = config.setTime;
+  caps["hideJet2"] = config.hideJet2;
 
   JsonObject filters = out["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = config.filterCycle1Start;

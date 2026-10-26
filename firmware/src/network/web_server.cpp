@@ -123,6 +123,24 @@ void WebServerHub::setupRoutes() {
         item["pumpLowSec"] = day.pumpLowSec;
         item["pumpHighSec"] = day.pumpHighSec;
         item["filterSec"] = day.filterSec;
+        if (day.waterTempSec) {
+          item["waterTemp"] = roundf(day.waterTempAvg * 10.0f) / 10.0f;
+        }
+        if (day.setTempSec) {
+          item["setTemp"] = roundf(day.setTempAvg * 10.0f) / 10.0f;
+        }
+      }
+      JsonArray hours = out["hours"].to<JsonArray>();
+      for (const RuntimeHour &hour : runtime_.hours()) {
+        JsonObject item = hours.add<JsonObject>();
+        item["start"] = hour.start;
+        item["heatingSec"] = hour.heatingSec;
+        if (hour.waterTempSec) {
+          item["waterTemp"] = roundf(hour.waterTempAvg * 10.0f) / 10.0f;
+        }
+        if (hour.setTempSec) {
+          item["setTemp"] = roundf(hour.setTempAvg * 10.0f) / 10.0f;
+        }
       }
     });
   });
@@ -397,7 +415,7 @@ void WebServerHub::persistFilterCyclesRead() {
 }
 
 void WebServerHub::applyCapabilitiesToSpa() {
-  spa_.setUserCapabilities(config_.setTime);
+  spa_.setUserCapabilities(config_.setTime, config_.hideJet2);
 }
 
 // Seeds the display with the last known spa values until the first read-back arrives.

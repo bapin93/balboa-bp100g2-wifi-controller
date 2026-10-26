@@ -45,29 +45,48 @@ bool Store::saveConfig(const DeviceConfig &config) {
   return serializeJsonPretty(doc, file) > 0;
 }
 
-std::vector<RuntimeDay> Store::loadRuntime() {
-  std::vector<RuntimeDay> days;
+void Store::loadRuntime(RuntimeLog &log) {
   File file = LittleFS.open(AppConfig::RuntimePath, "r");
   if (!file) {
-    return days;
+    return;
   }
   JsonDocument doc;
   if (deserializeJson(doc, file)) {
     Serial.println("[store] runtime parse failed");
-    return days;
+    return;
   }
-  for (JsonObjectConst item : doc.as<JsonArrayConst>()) {
+  // Older files were just the array of days.
+  JsonArrayConst dayItems = doc.is<JsonArrayConst>() ? doc.as<JsonArrayConst>() : doc["days"].as<JsonArrayConst>();
+  std::vector<RuntimeDay> days;
+  for (JsonObjectConst item : dayItems) {
     RuntimeDay day;
     day.date = item["d"] | 0;
     day.heatingSec = item["h"] | 0;
     day.pumpLowSec = item["l"] | 0;
     day.pumpHighSec = item["p"] | 0;
     day.filterSec = item["f"] | 0;
+    day.waterTempAvg = item["w"] | NAN;
+    day.waterTempSec = item["ws"] | 0;
+    day.setTempAvg = item["s"] | NAN;
+    day.setTempSec = item["ss"] | 0;
     if (day.date) {
       days.push_back(day);
     }
   }
-  return days;
+  std::vector<RuntimeHour> hours;
+  for (JsonObjectConst item : doc["hours"].as<JsonArrayConst>()) {
+    RuntimeHour hour;
+    hour.start = item["t"] | 0;
+    hour.waterTempAvg = item["w"] | NAN;
+    hour.waterTempSec = item["ws"] | 0;
+    hour.setTempAvg = item["s"] | NAN;
+    hour.setTempSec = item["ss"] | 0;
+    hour.heatingSec = item["h"] | 0;
+    if (hour.start) {
+      hours.push_back(hour);
+    }
+  }
+  log.load(days, hours);
 }
 
 bool Store::saveRuntime(const RuntimeLog &log) {
@@ -77,7 +96,7 @@ bool Store::saveRuntime(const RuntimeLog &log) {
     return false;
   }
   JsonDocument doc;
-  JsonArray days = doc.to<JsonArray>();
+  JsonArray days = doc["days"].to<JsonArray>();
   for (const RuntimeDay &day : log.days()) {
     JsonObject item = days.add<JsonObject>();
     item["d"] = day.date;
@@ -85,6 +104,28 @@ bool Store::saveRuntime(const RuntimeLog &log) {
     item["l"] = day.pumpLowSec;
     item["p"] = day.pumpHighSec;
     item["f"] = day.filterSec;
+    if (day.waterTempSec) {
+      item["w"] = day.waterTempAvg;
+      item["ws"] = day.waterTempSec;
+    }
+    if (day.setTempSec) {
+      item["s"] = day.setTempAvg;
+      item["ss"] = day.setTempSec;
+    }
+  }
+  JsonArray hours = doc["hours"].to<JsonArray>();
+  for (const RuntimeHour &hour : log.hours()) {
+    JsonObject item = hours.add<JsonObject>();
+    item["t"] = hour.start;
+    item["h"] = hour.heatingSec;
+    if (hour.waterTempSec) {
+      item["w"] = hour.waterTempAvg;
+      item["ws"] = hour.waterTempSec;
+    }
+    if (hour.setTempSec) {
+      item["s"] = hour.setTempAvg;
+      item["ss"] = hour.setTempSec;
+    }
   }
   return serializeJson(doc, file) > 0;
 }
@@ -131,6 +172,24 @@ bool Store::saveMaintenance(MaintenanceLog &log) {
   }
   log.clearDirty();
   return true;
+}
+
+uint8_t Store::loadWifiFailedBoots() {
+  Preferences prefs;
+  if (!prefs.begin("wifi", true)) {
+    return 0;
+  }
+  const uint8_t count = prefs.getUChar("failedBoots", 0);
+  prefs.end();
+  return count;
+}
+
+void Store::saveWifiFailedBoots(uint8_t count) {
+  Preferences prefs;
+  if (prefs.begin("wifi", false)) {
+    prefs.putUChar("failedBoots", count);
+    prefs.end();
+  }
 }
 
 bool Store::ensureDefaults() {

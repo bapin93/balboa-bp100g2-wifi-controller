@@ -4,3 +4,5 @@
 firmware/.pio/
 firmware/.cache/
 firmware/compile_commands.json
+__pycache__/
+*.pyc

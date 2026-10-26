@@ -18,6 +18,7 @@ src/balboa/spa.cpp; keep them in sync when the firmware changes.
 
 import argparse
 import base64
+import calendar
 import hashlib
 import json
 import math
@@ -26,6 +27,8 @@ import random
 import struct
 import threading
 import time
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -76,12 +79,15 @@ class MockSpa:
         ]
         self.config = {
             "timezone": "MST7MDT,M3.2.0/2,M11.1.0/2", "authEnabled": False, "authPasswordSet": False,
-            "capabilities": {"setTime": True},
+            "capabilities": {"setTime": True, "hideJet2": False},
+            "location": dict(zip(("lat", "lon"), map(float, args.location.split(",")))) if args.location else None,
         }
         self.maint = self._seed_maintenance(args.no_filters)
         self.capture_active = False
         self.capture_lines = []
+        self.outside_daily, self.outside_hourly = self._fetch_outside()
         self.runtime = self._fake_history()
+        self.hours = self._fake_hours()
         self.pending = []  # (due_time, fn) delayed spa reactions
         self.last_tick = time.monotonic()
         self.hold_until = 0.0
@@ -201,21 +207,81 @@ class MockSpa:
 
     # ── simulation ──
 
+    def _fetch_outside(self):
+        """The same Open-Meteo history the browser charts, so simulated heater time can follow it."""
+        location = self.config.get("location")
+        if not location:
+            return {}, {}
+        params = urllib.parse.urlencode({
+            "latitude": location["lat"], "longitude": location["lon"], "hourly": "temperature_2m",
+            "daily": "temperature_2m_mean", "temperature_unit": "fahrenheit", "timezone": "auto",
+            "past_days": 14, "forecast_days": 1})
+        try:
+            with urllib.request.urlopen(f"https://api.open-meteo.com/v1/forecast?{params}", timeout=6) as response:
+                data = json.load(response)
+        except Exception as error:  # offline is fine: fall back to made-up weather
+            print(f"[mock] outside temperature unavailable ({error}); using made-up weather")
+            return {}, {}
+        offset = data.get("utc_offset_seconds", 0)
+        daily = {int(d.replace("-", "")): t for d, t in zip(data["daily"]["time"], data["daily"]["temperature_2m_mean"])
+                 if t is not None}
+        # Times are the location's local time; read them as UTC, then remove the location's offset.
+        hourly = {calendar.timegm(time.strptime(h, "%Y-%m-%dT%H:%M")) - offset: t
+                  for h, t in zip(data["hourly"]["time"], data["hourly"]["temperature_2m"]) if t is not None}
+        return daily, hourly
+
+    def _outside_at(self, epoch):
+        """Outside °F for an hour: the fetched value, or a made-up daily swing around 50°F."""
+        if self.outside_hourly:
+            nearest = min(self.outside_hourly, key=lambda t: abs(t - epoch))
+            if abs(nearest - epoch) <= 3 * 3600:
+                return self.outside_hourly[nearest]
+        hour = datetime.fromtimestamp(epoch).hour
+        return 50 - 10 * math.cos((hour - 4) / 24 * 2 * math.pi)
+
     def _fake_history(self):
+        # Heater time rises as it gets colder outside (about +22 min per 10°F), plus day-to-day noise.
         days = []
         today = date.today()
         for back in range(13, 0, -1):
             day = today - timedelta(days=back)
+            key = int(day.strftime("%Y%m%d"))
+            outside = self.outside_daily.get(key, 50 + random.uniform(-12, 12))
+            # Turned down to 96°F on the coldest days, like you might; heat loss follows water minus outside.
+            set_temp = 96.0 if outside < 46 else 100.0
+            water = round(set_temp - random.uniform(0.0, 1.0), 1)
+            minutes = max(10, min(360, 2.2 * (water - outside) - 20 + random.gauss(0, 6)))
             days.append({
-                "date": int(day.strftime("%Y%m%d")),
-                "heatingSec": random.randint(40, 200) * 60,
+                "date": key,
+                "heatingSec": int(minutes * 60),
                 "pumpLowSec": random.randint(300, 600) * 60,
                 "pumpHighSec": random.randint(0, 45) * 60,
                 "filterSec": 6 * 3600,
+                "waterTemp": water,
+                "setTemp": set_temp,
             })
         days.append({"date": int(today.strftime("%Y%m%d")), "heatingSec": 0, "pumpLowSec": 0,
                      "pumpHighSec": 0, "filterSec": 0})
         return days
+
+    def _fake_hours(self):
+        # The water loses heat faster when it's colder outside; the heater tops it back up to the set point.
+        # On cold nights the spa is turned down to 96°F from midnight to 6 AM.
+        hours, temp = [], 99.6
+        top = int(time.time()) // 3600 * 3600
+        for back in range(47, 0, -1):
+            start = top - back * 3600
+            outside = self._outside_at(start)
+            set_temp = 96.0 if datetime.fromtimestamp(start).hour < 6 and outside < 42 else 100.0
+            temp -= 0.012 * (temp - outside) + random.uniform(-0.03, 0.03)
+            heating = 0
+            if temp < set_temp - 1:
+                minutes = min(60, (set_temp - temp) / 1.6 * 60)
+                heating = int(minutes * 60)
+                temp += 1.6 * minutes / 60
+            hours.append({"start": start, "heatingSec": heating, "waterTemp": round(temp, 1), "setTemp": set_temp})
+        hours.append({"start": top, "heatingSec": 0, "waterTemp": round(temp, 1), "setTemp": self.state["setTemp"]})
+        return hours
 
     def _filter_running(self, now):
         minutes = now.hour * 60 + now.minute
@@ -271,6 +337,15 @@ class MockSpa:
                     if f["stints"] and f["stints"][-1][1] == 0:
                         f["pumpSec"] += dt
                         f["pumpSecSinceClean"] += dt
+            top = int(time.time()) // 3600 * 3600
+            if self.hours[-1]["start"] != top:
+                self.hours = (self.hours + [{"start": top, "heatingSec": 0, "waterTemp": s["waterTemp"]}])[-48:]
+            hour = self.hours[-1]
+            hour["heatingSec"] += dt if s["heating"] else 0
+            hour["waterTemp"] = round(s["waterTemp"], 1)
+            hour["setTemp"] = s["setTemp"]
+            today["waterTemp"] = round(s["waterTemp"], 1)
+            today["setTemp"] = s["setTemp"]
             today["heatingSec"] += dt if s["heating"] else 0
             today["pumpLowSec"] += dt if s["jet1Speed"] == 1 else 0
             today["pumpHighSec"] += dt if s["jet1Speed"] == 2 else 0
@@ -283,6 +358,11 @@ class MockSpa:
                     f"heating={int(s['heating'])} hold={int(s['hold'])} jetSpeed={s['jet1Speed']}/{s['jet2Speed']} "
                     f"light={int(s['light'])}")
                 self.capture_lines = self.capture_lines[-500:]
+
+    def _pump_speeds(self, pump):
+        if pump == 2 and self.config["capabilities"].get("hideJet2"):
+            return 0
+        return self.pump_speeds[pump - 1]
 
     def _press_pump(self, pump):
         """One press of a jet button, as the spa would handle it."""
@@ -357,7 +437,7 @@ class MockSpa:
             return 202, "command accepted"
         if action == "setPump":
             pump, value = cmd.get("pump", 0), cmd.get("value", -1)
-            if pump not in (1, 2) or self.pump_speeds[pump - 1] == 0:
+            if pump not in (1, 2) or self._pump_speeds(pump) == 0:
                 return 400, "this spa does not have that pump"
             if not 0 <= value <= self.pump_speeds[pump - 1]:
                 return 400, "pump speed must be 0-2"
@@ -372,7 +452,7 @@ class MockSpa:
             return 202, "pump change started"
         if action == "togglePump":
             pump = cmd.get("pump", 0)
-            if pump not in (1, 2) or self.pump_speeds[pump - 1] == 0:
+            if pump not in (1, 2) or self._pump_speeds(pump) == 0:
                 return 400, "this spa does not have that pump"
             if self.pump_cmd_internal:
                 return 400, "a pump change is already in progress"
@@ -440,9 +520,9 @@ class MockSpa:
                 "statusCaptureActive": self.capture_active,
                 "statusCaptureLines": len(self.capture_lines),
                 "capabilities": {
-                    "detected": True, "jet1": speeds[0] > 0, "jet2": speeds[1] > 0,
-                    "pump1Speeds": speeds[0], "pump2Speeds": speeds[1], "light": True,
-                    **self.config["capabilities"],
+                    "detected": True, "jet1": speeds[0] > 0, "jet2": self._pump_speeds(2) > 0,
+                    "pump1Speeds": speeds[0], "pump2Speeds": self._pump_speeds(2), "light": True,
+                    "pump2Installed": speeds[1] > 0, **self.config["capabilities"],
                 },
             }
             return {"type": "state", "data": data}
@@ -461,7 +541,8 @@ class MockSpa:
 
     def runtime_json(self):
         with self.lock:
-            return {"days": [{k: round(v) for k, v in day.items()} for day in self.runtime]}
+            whole = lambda item: {k: v if k in ("waterTemp", "setTemp") else round(v) for k, v in item.items()}
+            return {"days": [whole(day) for day in self.runtime], "hours": [whole(hour) for hour in self.hours]}
 
     def config_json(self):
         with self.lock:
@@ -472,6 +553,9 @@ class MockSpa:
             for key in ("timezone", "authEnabled"):
                 if key in body:
                     self.config[key] = body[key]
+            if isinstance(body.get("location"), dict):
+                loc = body["location"]
+                self.config["location"] = {"lat": float(loc["lat"]), "lon": float(loc["lon"])} if loc else None
             if body.get("authPassword"):
                 self.config["authPasswordSet"] = True
             self.config["capabilities"].update(body.get("capabilities", {}))
@@ -658,12 +742,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from your phone")
     parser.add_argument("--port", type=int, default=8090)
-    parser.add_argument("--pumps", default="2", help="speeds per pump, e.g. 2 or 2,1 (0 none, 1 on/off, 2 two-speed)")
+    parser.add_argument("--pumps", default="2,1",
+                        help="speeds the board reports per pump, e.g. 2 or 2,1 (0 none, 1 on/off, 2 two-speed); "
+                             "the default matches a BP100G2 set up for a pump 2 that isn't installed")
     parser.add_argument("--water", type=float, default=95, help="starting water temp F")
     parser.add_argument("--heat-rate", type=float, default=0.05, help="F per second while heating (fast, for demos)")
     parser.add_argument("--reminder", type=lambda v: int(v, 0), default=0, help="reminder code, e.g. 4 clean filter")
     parser.add_argument("--no-faults", action="store_true", help="start with an empty fault log")
     parser.add_argument("--no-filters", action="store_true", help="start with no filters on the Maintenance tab")
+    parser.add_argument("--location", default="39.74,-104.99",
+                        help="lat,lon for outside temperature (default Denver); empty string for none")
     parser.add_argument("--no-heat-pump", action="store_true",
                         help="let pump 1 turn off while heating or filtering")
     args = parser.parse_args()

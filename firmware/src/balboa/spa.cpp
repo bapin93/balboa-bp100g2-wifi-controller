@@ -135,8 +135,21 @@ bool SpaController::hasFreshState() const {
   return state_.valid && millis() - state_.lastUpdateMs <= StateFreshMs;
 }
 
-void SpaController::setUserCapabilities(bool setTime) {
+void SpaController::setUserCapabilities(bool setTime, bool hideJet2) {
   capabilities_.setTime = setTime;
+  hideJet2_ = hideJet2;
+  applyEquipmentCapabilities();
+  stateChanged_ = true;
+}
+
+void SpaController::applyEquipmentCapabilities() {
+  if (!equipment_) {
+    return;  // keep the defaults until the spa reports its equipment
+  }
+  capabilities_.detected = true;
+  capabilities_.pump1Speeds = equipment_->pumpSpeeds[0];
+  capabilities_.pump2Speeds = hideJet2_ ? 0 : equipment_->pumpSpeeds[1];
+  capabilities_.light = equipment_->light1;
 }
 
 bool SpaController::consumeStateChanged() {
@@ -229,6 +242,7 @@ void SpaController::writeStateJson(JsonObject out) const {
 
 void SpaController::writeCapabilitiesJson(JsonObject out) const {
   out["detected"] = capabilities_.detected;
+  out["pump2Installed"] = equipment_ && equipment_->pumpSpeeds[1] > 0;  // what the spa reports, before hideJet2
   out["jet1"] = capabilities_.pump1Speeds > 0;
   out["jet2"] = capabilities_.pump2Speeds > 0;
   out["pump1Speeds"] = capabilities_.pump1Speeds;
@@ -970,10 +984,7 @@ void SpaController::handleFrame(const Frame &frame) {
     case MessageConfigurationResponse:
       if (const auto equipment = decodeDeviceConfiguration(frame.payload)) {
         equipment_ = equipment;
-        capabilities_.detected = true;
-        capabilities_.pump1Speeds = equipment->pumpSpeeds[0];
-        capabilities_.pump2Speeds = equipment->pumpSpeeds[1];
-        capabilities_.light = equipment->light1;
+        applyEquipmentCapabilities();
         ++spaInfoSeq_;
         stateChanged_ = true;
         logDebug("[balboa] equipment pumps=%u/%u/%u/%u/%u/%u light1=%u light2=%u blower=%u circ=%u",

@@ -11,6 +11,10 @@ struct DeviceConfig {
   bool authEnabled = false;
   char authPassword[40] = "";
   bool setTime = true;
+  bool hideJet2 = false;  // some packs are configured for a pump that isn't installed
+  bool hasLocation = false;  // for outside temperature from Open-Meteo
+  float latitude = 0;
+  float longitude = 0;
   uint8_t filterCycle1Start = 8;
   uint8_t filterCycle1StartMinute = 0;
   uint8_t filterCycle1Duration = 2;

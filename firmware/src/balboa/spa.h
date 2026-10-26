@@ -76,7 +76,7 @@ class SpaController {
 
   const SpaState &state() const { return state_; }
   bool hasFreshState() const;
-  void setUserCapabilities(bool setTime);
+  void setUserCapabilities(bool setTime, bool hideJet2);
   void setConfiguredFilterCycles(uint8_t cycle1Start, uint8_t cycle1StartMinute, uint8_t cycle1Duration,
                                  uint8_t cycle1DurationMinute, bool cycle2Enabled,
                                  uint8_t cycle2Start, uint8_t cycle2StartMinute, uint8_t cycle2Duration,
@@ -145,6 +145,7 @@ class SpaController {
   CommandResult startFaultLogRead();
   void requestSpaInfo();
   void handleFrame(const Frame &frame);
+  void applyEquipmentCapabilities();
   void applyStatus(const StatusUpdate &status);
   void applyFaultLogEntry(const FaultLogEntry &entry);
   void publishFilterCyclesRead();
@@ -163,6 +164,7 @@ class SpaController {
   SpaState state_;
   SpaCapabilities capabilities_;
   std::optional<DeviceConfiguration> equipment_;
+  bool hideJet2_ = false;
   std::optional<SystemInformation> systemInfo_;
   std::optional<SetupParameters> setupParams_;
   uint32_t spaInfoSeq_ = 0;

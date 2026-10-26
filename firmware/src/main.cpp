@@ -21,16 +21,21 @@ RuntimeLog runtime;
 MaintenanceLog maintenance;
 uint32_t lastRuntimeTickMs = 0;
 uint32_t lastRuntimeSaveMs = 0;
+bool wifiConnected = false;
+bool otaStarted = false;
+bool failedBootsCleared = false;
+uint32_t lastWifiOkMs = 0;
+uint32_t lastWifiAttemptMs = 0;
 
 const char *configuredTimezone() {
   return strlen(deviceConfig.timezone) > 0 ? deviceConfig.timezone : DefaultTimezone;
 }
 
-void setupWifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname(AppConfig::Hostname);
+void setupOta();
 
-  WiFiManager wm;
+// Opens the blocking setup portal. Only used when there's no saved network, or when several boots in a
+// row never managed to join it.
+void runSetupPortal(WiFiManager &wm) {
   bool configPortalStarted = false;
   wm.setAPCallback([&configPortalStarted](WiFiManager *) {
     configPortalStarted = true;
@@ -42,10 +47,71 @@ void setupWifi() {
     ESP.restart();
   }
 
-  Serial.printf("[wifi] connected ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   if (configPortalStarted) {
     Serial.println("[wifi] setup portal completed, restarting before app server start");
     delay(1000);
+    ESP.restart();
+  }
+}
+
+// Starts joining WiFi without blocking, so the spa link and web server come up right away.
+// superviseWifi() finishes the job and keeps retrying.
+void setupWifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(AppConfig::Hostname);
+  WiFi.setAutoReconnect(true);
+
+  WiFiManager wm;
+  const uint8_t failedBoots = store.loadWifiFailedBoots();
+  if (!wm.getWiFiIsSaved() || failedBoots >= AppConfig::WifiPortalAfterFailedBoots) {
+    Serial.printf("[wifi] opening setup portal (saved=%u failedBoots=%u)\n", wm.getWiFiIsSaved() ? 1 : 0,
+                  failedBoots);
+    store.saveWifiFailedBoots(0);
+    runSetupPortal(wm);
+    return;
+  }
+  // Counted as failed until this boot connects; superviseWifi() clears it.
+  store.saveWifiFailedBoots(failedBoots + 1);
+  WiFi.begin();
+  lastWifiAttemptMs = millis();
+  Serial.printf("[wifi] joining saved network \"%s\"\n", wm.getWiFiSSID().c_str());
+}
+
+void superviseWifi() {
+  const uint32_t now = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiConnected) {
+      wifiConnected = true;
+      Serial.printf("[wifi] connected ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      if (!otaStarted) {
+        setupOta();  // needs the network up for mDNS
+        otaStarted = true;
+      }
+      if (!failedBootsCleared) {
+        store.saveWifiFailedBoots(0);
+        failedBootsCleared = true;
+      }
+    }
+    lastWifiOkMs = now;
+    return;
+  }
+  if (wifiConnected) {
+    wifiConnected = false;
+    Serial.println("[wifi] connection lost, retrying");
+  }
+  if (now - lastWifiAttemptMs >= AppConfig::WifiRetryIntervalMs) {
+    lastWifiAttemptMs = now;
+    Serial.println("[wifi] retrying saved network");
+    WiFi.disconnect(false);
+    WiFi.begin();
+  }
+  if (now - lastWifiOkMs >= AppConfig::WifiRestartAfterMs) {
+    Serial.println("[wifi] down for 15 minutes, restarting");
+    store.saveRuntime(runtime);
+    if (maintenance.dirty()) {
+      store.saveMaintenance(maintenance);
+    }
+    delay(200);
     ESP.restart();
   }
 }
@@ -108,7 +174,10 @@ void trackRuntime() {
   sample.heating = state.heating;
   sample.pump1Speed = state.jet1Speed;
   sample.filterRunning = state.activeFilterCycle != 0;
-  const bool newDay = runtime.add(date, credited, sample);
+  sample.waterTemp = state.waterTemp;
+  sample.setTemp = state.setTemp;
+  const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
+  const bool newDay = runtime.add(date, epoch - epoch % 3600, credited, sample);
   if (newDay || now - lastRuntimeSaveMs >= AppConfig::RuntimeSaveIntervalMs) {
     store.saveRuntime(runtime);
     if (maintenance.dirty()) {
@@ -130,7 +199,7 @@ void setup() {
     Serial.println("[boot] storage unavailable");
   }
   deviceConfig = store.loadConfig();
-  runtime.load(store.loadRuntime());
+  store.loadRuntime(runtime);
   store.loadMaintenance(maintenance);
   maintenance.ensureDefaultTasks(static_cast<uint32_t>(time(nullptr)));
   if (maintenance.dirty()) {
@@ -145,17 +214,19 @@ void setup() {
 
   setupWifi();
   setupTime();
-  setupOta();
 
   web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance);
   web->begin();
 }
 
 void loop() {
+  superviseWifi();
   spa.loop();
   trackRuntime();
   if (web) {
     web->loop();
   }
-  ArduinoOTA.handle();
+  if (otaStarted) {
+    ArduinoOTA.handle();
+  }
 }
