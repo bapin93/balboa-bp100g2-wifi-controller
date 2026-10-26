@@ -304,6 +304,14 @@ h1 {
   color: var(--warn);
 }
 
+.spa-banner.quiet {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.spa-banner.quiet .banner-btn { color: var(--accent); }
+
 .spa-banner.hidden { display: none; }
 
 .banner-btn {
@@ -479,6 +487,7 @@ h1 {
   --chart-heater: #c98500;
   --chart-set: #8b95a5;  /* neutral: the target, not a measurement */
   --chart-grid: #1f2d3d;
+  --chart-peak-band: rgba(139, 149, 165, 0.14);  /* neutral shading: a time window, not a series */
 }
 
 .chart-card {
@@ -509,6 +518,8 @@ h1 {
 .key-line.outside { background: var(--chart-outside); }
 .key-line.set { background: var(--chart-set); }
 .key-line.heater { background: var(--chart-heater); height: 8px; width: 8px; border-radius: 2px; }
+.key-line.set.dashed { background: repeating-linear-gradient(90deg, var(--chart-set) 0 4px, transparent 4px 7px); }
+.key-line.peak { background: var(--chart-peak-band); height: 10px; width: 10px; border-radius: 2px; }
 
 .chart-caption { margin: 0 4px 8px; font-size: 12px; color: var(--muted); line-height: 1.4; }
 
@@ -1006,6 +1017,7 @@ h1 {
 }
 
 .row-btn:active { opacity: 0.65; }
+.row-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .row-btn:disabled { opacity: 0.45; }
 
 .section-header {

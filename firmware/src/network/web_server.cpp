@@ -13,6 +13,7 @@
 #include "build_info.h"
 
 #include "config.h"
+#include "scheduler/heat_planner.h"
 #include "storage/config_model.h"
 
 namespace {
@@ -68,7 +69,7 @@ bool sameFilterCycles(const DeviceConfig &a, const DeviceConfig &b) {
 
 WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config,
                            const RuntimeLog &runtime, MaintenanceLog &maintenance, WaterLog &water,
-                           const ThermalModel &thermal, const WeatherClient &weather)
+                           const ThermalModel &thermal, const WeatherClient &weather, SmartHeat &smart)
     : spa_(spa),
       store_(store),
       config_(config),
@@ -76,7 +77,8 @@ WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfi
       maintenance_(maintenance),
       water_(water),
       thermal_(thermal),
-      weather_(weather) {}
+      weather_(weather),
+      smart_(smart) {}
 
 void WebServerHub::begin() {
   applyCapabilitiesToSpa();
@@ -107,7 +109,7 @@ void WebServerHub::begin() {
     }
 
     JsonVariantConst command = doc.as<JsonVariantConst>();
-    Balboa::CommandResult result = spa_.handleCommand(command);
+    Balboa::CommandResult result = runCommand(command);
     client->text(commandResultJson(result));
   });
   server_.addHandler(&ws_);
@@ -220,6 +222,13 @@ void WebServerHub::setupRoutes() {
       weather_.writeJson(out["weather"].to<JsonObject>(), static_cast<uint32_t>(time(nullptr)));
     });
   });
+  server_.on("/api/smart", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) {
+      smart_.writeStateJson(out, static_cast<uint32_t>(time(nullptr)));
+      smart_.writePlanJson(out);
+    });
+  });
+  server_.on("/api/plan", HTTP_GET, [this](AsyncWebServerRequest *request) { sendPlanPreview(request); });
   server_.on("/api/debug-log", HTTP_GET, [this](AsyncWebServerRequest *request) {
     if (!isAuthorized(request)) {
       return request->requestAuthentication();
@@ -349,8 +358,13 @@ void WebServerHub::handleCommandBody(AsyncWebServerRequest *request, uint8_t *da
     return;
   }
   JsonVariantConst command = doc.as<JsonVariantConst>();
-  Balboa::CommandResult result = spa_.handleCommand(command);
+  Balboa::CommandResult result = runCommand(command);
   sendCommandResult(request, result);
+}
+
+Balboa::CommandResult WebServerHub::runCommand(JsonVariantConst command) {
+  const char *action = command["action"] | "";
+  return SmartHeat::handles(action) ? smart_.handleCommand(command) : spa_.handleCommand(command);
 }
 
 void WebServerHub::writeMaintenanceJson(JsonObject out) {
@@ -444,7 +458,7 @@ void WebServerHub::handleWaterBody(AsyncWebServerRequest *request, uint8_t *data
   if (!error) {
     if (strcmp(action, "reading") == 0) {
       error = water_.addReading(ts, doc["san"] | NAN, doc["ph"] | NAN, doc["ta"] | NAN, doc["th"] | NAN,
-                                doc["note"] | "");
+                                doc["note"] | "", doc["sanLevel"] | 0);
     } else if (strcmp(action, "dose") == 0) {
       error = water_.addDose(ts, doc["chem"] | "", doc["amount"] | NAN, doc["unit"] | "", doc["note"] | "");
     } else if (strcmp(action, "replace") == 0) {
@@ -516,6 +530,87 @@ void WebServerHub::sendConfig(AsyncWebServerRequest *request) {
   request->send(200, "application/json", body);
 }
 
+// Previews a soak without scheduling it: ?target=104&readyAt=<unix>&hours=2, each optional (readyAt
+// omitted = as soon as possible). Also prices "turn it up now and leave it" for comparison.
+void WebServerHub::sendPlanPreview(AsyncWebServerRequest *request) {
+  if (!isAuthorized(request)) {
+    return request->requestAuthentication();
+  }
+  constexpr uint32_t StepSec = 900;
+  constexpr size_t Steps = 36 * 3600 / StepSec;
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  if (now < 1700000000) {
+    return sendInvalid(request, "the clock isn't set yet");
+  }
+  const float water = spa_.currentWaterTemp();
+  if (isnan(water)) {
+    return sendInvalid(request, "no water temperature reading yet");
+  }
+  const auto param = [request](const char *name) {
+    return request->hasParam(name) ? request->getParam(name)->value().c_str() : nullptr;
+  };
+  const float target = param("target") ? strtof(param("target"), nullptr) : spa_.state().setTemp;
+  const float hours = param("hours") ? strtof(param("hours"), nullptr) : 2.0f;
+  const uint32_t readyAt = param("readyAt") ? static_cast<uint32_t>(strtoul(param("readyAt"), nullptr, 10)) : 0;
+  if (!(target >= 50 && target <= 104)) {
+    return sendInvalid(request, "target must be 50-104°F");
+  }
+  if (!(hours >= 0.25f && hours <= 8)) {
+    return sendInvalid(request, "hours must be 0.25-8");
+  }
+  if (readyAt && (readyAt < now || readyAt > now + 30 * 3600)) {
+    return sendInvalid(request, "ready time must be within the next 30 hours");
+  }
+
+  PlanInput base;
+  base.start = now - now % StepSec;
+  base.stepSec = StepSec;
+  base.waterTemp = water;
+  base.heaterKw = config_.power.heaterKw;
+  base.heaterRate = thermal_.heaterRate();
+  base.lossCoeff = thermal_.lossCoeff();
+  base.steps = buildPlanSteps(base.start, StepSec, Steps, config_.tou, config_.rates, target,
+                              [this](uint32_t at) { return weather_.outsideAt(at); });
+  const uint32_t asap = earliestReady(base, target);
+  const uint32_t ready = readyAt ? std::max(readyAt, asap) : asap;
+  PlanInput smart = base;
+  addSoak(smart, target, ready, hours);
+  PlanInput leaveOn = base;
+  addSoak(leaveOn, target, asap, static_cast<float>(ready - asap) / 3600.0f + hours);
+  const PlanResult plan = HeatPlanner::plan(smart);
+  const PlanResult baseline = HeatPlanner::plan(leaveOn);
+
+  sendJson(request, [&](JsonObject out) {
+    out["start"] = base.start;
+    out["stepSec"] = StepSec;
+    out["waterTemp"] = water;
+    out["target"] = target;
+    out["hours"] = hours;
+    out["readyAt"] = ready;
+    out["asapReadyAt"] = asap;
+    out["reachable"] = asap != 0;
+    out["kwh"] = roundf(plan.kwh * 100) / 100;
+    out["cost"] = roundf(plan.cost * 1000) / 1000;
+    out["shortfall"] = roundf(plan.shortfall * 10) / 10;
+    JsonObject leave = out["leaveOn"].to<JsonObject>();
+    leave["kwh"] = roundf(baseline.kwh * 100) / 100;
+    leave["cost"] = roundf(baseline.cost * 1000) / 1000;
+    JsonArray steps = out["steps"].to<JsonArray>();
+    for (size_t s = 0; s < plan.temp.size(); ++s) {
+      JsonObject step = steps.add<JsonObject>();
+      step["heat"] = roundf(plan.heat[s] * 100) / 100;
+      step["temp"] = roundf(plan.temp[s] * 10) / 10;
+      step["price"] = smart.steps[s].price;
+      if (!isnan(smart.steps[s].outside)) {
+        step["outside"] = roundf(smart.steps[s].outside);
+      }
+      if (!isnan(smart.steps[s].minTemp)) {
+        step["min"] = smart.steps[s].minTemp;
+      }
+    }
+  });
+}
+
 void WebServerHub::sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result) {
   const int code = result.status == Balboa::CommandStatus::Accepted ? 202 : 400;
   request->send(code, "application/json", commandResultJson(result));
@@ -528,6 +623,7 @@ String WebServerHub::stateJson() {
   JsonObject data = root["data"].to<JsonObject>();
   spa_.writeStateJson(data);
   spa_.writeCapabilitiesJson(data["capabilities"].to<JsonObject>());
+  smart_.writeStateJson(data["smart"].to<JsonObject>(), static_cast<uint32_t>(time(nullptr)));
   String body;
   serializeJson(doc, body);
   return body;

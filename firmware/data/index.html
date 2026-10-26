@@ -38,6 +38,10 @@
           <span id="holdText">Hold mode</span>
           <button class="banner-btn" id="holdResume" type="button">Resume</button>
         </div>
+        <div class="spa-banner hidden" id="smartBanner">
+          <span id="smartText">Soak</span>
+          <button class="banner-btn" id="smartAction" type="button">Cancel</button>
+        </div>
         <div class="spa-banner warn hidden" id="reminderBanner">
           <span id="reminderText">Reminder</span>
           <button class="banner-btn" id="reminderDismiss" type="button">Dismiss</button>
@@ -76,12 +80,12 @@
             </svg>
             <span>Light</span>
           </button>
-          <button class="toggle-btn" data-action="hold" aria-pressed="false">
+          <button class="toggle-btn" id="soakButton" type="button" aria-label="Plan a soak">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>
+              <circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9 2h6"/>
             </svg>
-            <span>Hold</span>
-            <span class="toggle-state" id="holdButtonState"></span>
+            <span>Soak</span>
+            <span class="toggle-state" id="soakButtonState"></span>
           </button>
         </div>
       </section>
@@ -147,6 +151,24 @@
         </div>
 
         <div class="subpanel" id="statsRuntime" role="tabpanel">
+          <p class="settings-section-title">Next 36 Hours</p>
+          <div class="chart-card">
+            <p class="chart-summary" id="planSummary"></p>
+            <div class="chart-legend" id="planLegend">
+              <span class="legend-key"><i class="key-line water"></i>Planned water</span>
+              <span class="legend-key"><i class="key-line set dashed"></i>Ready line</span>
+              <span class="legend-key"><i class="key-line peak"></i>Peak</span>
+            </div>
+            <div class="chart" id="planChart"></div>
+            <p class="chart-note" id="planNote"></p>
+          </div>
+
+          <p class="settings-section-title">When You Soak</p>
+          <div class="chart-card">
+            <p class="chart-caption">How often a soak starts in each half hour, learned from temperature changes, planned soaks and jet use. Brighter is more often; it sets how warm Smart Standby keeps the water.</p>
+            <div class="chart" id="usageChart"></div>
+          </div>
+
           <p class="settings-section-title">Last 48 Hours</p>
           <div class="chart-card">
             <div class="chart-legend" id="hoursLegend">
@@ -249,6 +271,15 @@
         </div>
 
         <div class="subpanel active" id="maintTasks" role="tabpanel">
+          <p class="settings-section-title">Hold</p>
+          <div class="card-form">
+            <div class="form-row">
+              <span class="form-row-label">Hold Mode <span class="row-sub" id="holdStatus">Off</span></span>
+              <button class="row-btn" id="holdToggle" data-action="hold" aria-pressed="false" type="button">Start Hold</button>
+            </div>
+          </div>
+          <p class="form-hint">Hold stops the pumps and heater while you change a filter or work on the tub. The spa ends it on its own after an hour.</p>
+
           <div class="section-header">
             <p class="settings-section-title">Tasks</p>
             <button id="addTask" class="row-btn" type="button">+ Add Task</button>
@@ -323,8 +354,20 @@
                   <option value="low">Low</option>
                 </select>
               </div>
+              <div class="form-row">
+                <label class="form-row-label" for="smartAuto">Smart Standby</label>
+                <label class="switch">
+                  <input type="checkbox" id="smartAuto" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <div class="form-row">
+                <label class="form-row-label" for="smartMinTemp">Lowest Smart Temp <span class="row-sub">°F</span></label>
+                <input class="form-row-input" id="smartMinTemp" type="number" min="50" max="104" step="1" inputmode="numeric" placeholder="90" />
+              </div>
             </div>
             <p class="form-hint" id="tempRangeHint">Each range keeps its own set temperature. Use Low to save energy while the tub sits unused.</p>
+            <p class="form-hint">Smart Standby lets the water cool when you're unlikely to get in and heats ahead of the times you usually do, off-peak when it can: ready within 30 minutes when you're likely to soak, 2 hours when you might, and 4 hours otherwise. It learns those times from when the jets or light come on. Changing the temperature yourself pauses it until an hour after you get out. The water never goes below the lowest smart temp, except in the Low range, where smart heating stays off so the tub can cool.</p>
 
             <p class="settings-section-title">Clock</p>
             <div class="card-form">
@@ -554,6 +597,45 @@
         </div>
       </div>
 
+      <!-- Soak planner -->
+      <div class="modal-overlay hidden" id="soakSheet">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="soakSheetTitle">
+          <div class="modal-handle"></div>
+          <h2 id="soakSheetTitle">Plan a Soak</h2>
+          <div class="card-form sheet-fields">
+            <div class="form-row">
+              <label class="form-row-label" for="soakTarget">Temperature <span class="row-sub">°F</span></label>
+              <input class="form-row-input" id="soakTarget" type="number" min="80" max="104" step="1" inputmode="numeric" />
+            </div>
+            <div class="form-row">
+              <label class="form-row-label" for="soakWhen">Ready</label>
+              <select class="form-row-input wide" id="soakWhen">
+                <option value="asap">As soon as possible</option>
+                <option value="at">At a time</option>
+              </select>
+            </div>
+            <div class="form-row" id="soakTimeRow" hidden>
+              <label class="form-row-label" for="soakTime">Ready At</label>
+              <input class="form-row-input wide" id="soakTime" type="time" step="900" />
+            </div>
+            <div class="form-row">
+              <label class="form-row-label" for="soakHours">Keep It Hot</label>
+              <select class="form-row-input wide" id="soakHours">
+                <option value="1">1 hour</option>
+                <option value="2" selected>2 hours</option>
+                <option value="3">3 hours</option>
+                <option value="4">4 hours</option>
+              </select>
+            </div>
+          </div>
+          <p class="sheet-text" id="soakPreview"></p>
+          <div class="modal-actions">
+            <button class="modal-cancel" id="soakCancel" type="button">Cancel</button>
+            <button class="modal-confirm" id="soakConfirm" type="button">Schedule</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Maintenance action sheet -->
       <div class="modal-overlay hidden" id="maintSheet">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="maintSheetTitle">
@@ -592,9 +674,18 @@
           <h2 id="waterSheetTitle">Log Test</h2>
           <p class="sheet-text" id="waterSheetText"></p>
           <div class="card-form sheet-fields" id="waterFields">
-            <div class="form-row" data-for="reading">
+            <div class="form-row" data-for="reading" id="wSanRow">
               <label class="form-row-label" for="wSan"><span id="wSanLabel">Free Chlorine</span> <span class="row-sub">ppm</span></label>
               <input class="form-row-input" id="wSan" type="number" min="0" max="20" step="any" inputmode="decimal" />
+            </div>
+            <div class="form-row" data-for="reading" id="wSanLevelRow">
+              <label class="form-row-label" for="wSanLevel">Free Chlorine <span class="row-sub">color zone</span></label>
+              <select class="form-row-input wide" id="wSanLevel">
+                <option value="">Not read</option>
+                <option value="1">Low</option>
+                <option value="2">OK</option>
+                <option value="3">High</option>
+              </select>
             </div>
             <div class="form-row" data-for="reading">
               <label class="form-row-label" for="wPh">pH</label>

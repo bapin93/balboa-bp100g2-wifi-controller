@@ -46,6 +46,7 @@ struct WaterEntry {
   WaterEntryType type = WaterEntryType::Reading;
   // Reading: NaN for a pad that wasn't read.
   float sanitizer = NAN;  // free chlorine or bromine, ppm
+  uint8_t sanitizerLevel = 0;  // FROG strips are read by color zone: 1 low, 2 in range, 3 high; 0 not read
   float ph = NAN;
   float alkalinity = NAN;  // ppm
   float hardness = NAN;    // ppm
@@ -74,8 +75,9 @@ class WaterLog {
   WaterLog();
 
   const char *setSystem(const std::string &name);
+  // sanitizerLevel is the color-zone reading (see WaterEntry); 0 when the pad was read in ppm or not at all.
   const char *addReading(uint32_t ts, float sanitizer, float ph, float alkalinity, float hardness,
-                         const std::string &note);
+                         const std::string &note, uint8_t sanitizerLevel = 0);
   const char *addDose(uint32_t ts, const std::string &chemical, float amount, const std::string &unit,
                       const std::string &note);
   // dial (0-6) is only kept for the SmartChlor; a negative dial leaves it unchanged.

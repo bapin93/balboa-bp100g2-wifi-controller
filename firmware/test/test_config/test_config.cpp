@@ -162,6 +162,16 @@ void test_tou_rates_and_power() {
   tiny["power"]["tubGallons"] = 10;
   TEST_ASSERT_FALSE(validateConfigJson(tiny.as<JsonVariantConst>(), current, next, &error));
 
+  JsonDocument smart;
+  TEST_ASSERT_TRUE(current.smartAuto);
+  smart["smart"]["minTemp"] = 92;
+  smart["smart"]["auto"] = false;
+  TEST_ASSERT_TRUE(validateConfigJson(smart.as<JsonVariantConst>(), current, next, &error));
+  TEST_ASSERT_EQUAL_UINT8(92, next.smartMinTemp);
+  TEST_ASSERT_FALSE(next.smartAuto);
+  smart["smart"]["minTemp"] = 110;
+  TEST_ASSERT_FALSE(validateConfigJson(smart.as<JsonVariantConst>(), current, next, &error));
+
   JsonDocument bad;
   bad["tou"]["peakStart"] = 24;
   TEST_ASSERT_FALSE(validateConfigJson(bad.as<JsonVariantConst>(), current, next, &error));

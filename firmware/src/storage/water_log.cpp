@@ -113,9 +113,12 @@ const char *WaterLog::setSystem(const std::string &name) {
 }
 
 const char *WaterLog::addReading(uint32_t ts, float sanitizer, float ph, float alkalinity, float hardness,
-                                 const std::string &rawNote) {
-  if (isnan(sanitizer) && isnan(ph) && isnan(alkalinity) && isnan(hardness)) {
+                                 const std::string &rawNote, uint8_t sanitizerLevel) {
+  if (isnan(sanitizer) && sanitizerLevel == 0 && isnan(ph) && isnan(alkalinity) && isnan(hardness)) {
     return "enter at least one reading";
+  }
+  if (sanitizerLevel > 3) {
+    return "chlorine level must be low, OK or high";
   }
   if (outside(sanitizer, 0, 20)) {
     return "sanitizer must be 0 to 20 ppm";
@@ -137,6 +140,7 @@ const char *WaterLog::addReading(uint32_t ts, float sanitizer, float ph, float a
   entry.ts = ts;
   entry.type = WaterEntryType::Reading;
   entry.sanitizer = rounded(sanitizer);
+  entry.sanitizerLevel = sanitizerLevel;
   entry.ph = rounded(ph);
   entry.alkalinity = rounded(alkalinity);
   entry.hardness = rounded(hardness);
@@ -265,6 +269,9 @@ void WaterLog::toJson(JsonObject out) const {
     switch (entry.type) {
       case WaterEntryType::Reading:
         putIfSet(item, "san", entry.sanitizer);
+        if (entry.sanitizerLevel) {
+          item["sanLevel"] = entry.sanitizerLevel;
+        }
         putIfSet(item, "ph", entry.ph);
         putIfSet(item, "ta", entry.alkalinity);
         putIfSet(item, "th", entry.hardness);
@@ -308,6 +315,7 @@ void WaterLog::fromJson(JsonVariantConst in) {
     entry.ts = item["ts"] | 0;
     entry.type = entryTypeFromName(item["type"] | "reading");
     entry.sanitizer = item["san"] | NAN;
+    entry.sanitizerLevel = item["sanLevel"] | 0;
     entry.ph = item["ph"] | NAN;
     entry.alkalinity = item["ta"] | NAN;
     entry.hardness = item["th"] | NAN;

@@ -37,6 +37,8 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SPEED_NAMES = ["Off", "Low", "High"]
 PRESS_LATENCY_S = 0.6  # how long the "spa" takes to react to a button press
+# Plans use realistic physics (src/scheduler/heat_planner.cpp) even though the simulated water heats fast.
+PLAN_HEATER_RATE, PLAN_LOSS, PLAN_STEP = 6.0, 0.012, 900
 
 
 class MockSpa:
@@ -87,6 +89,7 @@ class MockSpa:
                               "summerOffPeak": 0.07884, "winterPeak": 0.18331, "winterOffPeak": 0.06792}},
             "power": {"heaterKw": 5.5, "pump1LowKw": 0.5, "pump1HighKw": 1.8, "pump2Kw": 1.5, "standbyW": 30,
                       "tubGallons": 200},
+            "smart": {"minTemp": 90, "auto": True},
         }
         self.water_unknown = False  # like a real spa between pump runs: true temp simulated, not reported
         self.last_water = None      # last reported reading and when, as the firmware keeps it
@@ -102,6 +105,10 @@ class MockSpa:
         self.pending = []  # (due_time, fn) delayed spa reactions
         self.last_tick = time.monotonic()
         self.hold_until = 0.0
+        self.soak = None    # mirrors HeatController's soak, plus the plan it follows
+        self.manual = None
+        self.comfort = 100.0
+        self.auto_plan = None  # {"start", "steps"} while Auto runs
 
     # ── maintenance (mirrors src/storage/maintenance.cpp) ──
 
@@ -263,6 +270,8 @@ class MockSpa:
             action, slot = body.get("action"), body.get("slot")
             if action == "reading":
                 pads = {k: float(body[k]) for k in ("san", "ph", "ta", "th") if body.get(k) is not None}
+                if body.get("sanLevel"):
+                    pads["sanLevel"] = int(body["sanLevel"])
                 if not pads:
                     return "enter at least one reading"
                 if not 6 <= pads.get("ph", 7) <= 9:
@@ -479,6 +488,7 @@ class MockSpa:
             today["filterSec"] += dt if s["activeFilterCycle"] else 0
 
             self._step_pump_command(now_m)
+            self._step_smart()
             if self.capture_active:
                 self.capture_lines.append(
                     f"{int(now_m * 1000)} status water={s['waterTemp']:.0f} set={s['setTemp']:.0f} "
@@ -543,7 +553,10 @@ class MockSpa:
             if not isinstance(value, (int, float)) or not low <= value <= high:
                 return 400, f"set temperature must be {low}-{high} F"
             later(0.6, lambda: s.update(setTemp=float(value)))
+            self._manual_change(float(value))
             return 202, "command accepted"
+        if action in ("soak", "cancelSoak", "resumeSmart"):
+            return self._smart_command(action, cmd)
         if action in ("setFilter1", "setFilter2"):
             n = 2 if action == "setFilter2" else 1
             enabled = n == 1 or bool(cmd.get("enabled"))
@@ -661,6 +674,7 @@ class MockSpa:
                 "valid": True,
                 "statusCaptureActive": self.capture_active,
                 "statusCaptureLines": len(self.capture_lines),
+                "smart": self.smart_json(int(time.time())),
                 "capabilities": {
                     "detected": True, "jet1": speeds[0] > 0, "jet2": self._pump_speeds(2) > 0,
                     "pump1Speeds": speeds[0], "pump2Speeds": self._pump_speeds(2), "light": True,
@@ -707,6 +721,267 @@ class MockSpa:
                             "now": round(self._outside_at(now), 1), "hours": hours},
             }
 
+    # ── smart heating (mirrors src/scheduler/heat_controller.cpp and heat_planner.cpp, simplified) ──
+
+    def _price(self, epoch):
+        when, tou = datetime.fromtimestamp(epoch), self.config["tou"]
+        rates = tou["rates"]
+        peak = when.weekday() < 5 and tou["peakStart"] <= when.hour < tou["peakEnd"]
+        a, b = rates["summerStartMonth"], rates["summerEndMonth"]
+        summer = a <= when.month <= b if a <= b else (when.month >= a or when.month <= b)
+        on, off = (rates["summerPeak"], rates["summerOffPeak"]) if summer else (rates["winterPeak"], rates["winterOffPeak"])
+        if not on and not off:
+            return 2.0 if peak else 1.0
+        return on if peak else off
+
+    @staticmethod
+    def _simulate(temp, heat, outside, top):
+        hours = PLAN_STEP / 3600
+        coast = outside + (temp - outside) * math.exp(-PLAN_LOSS * hours)
+        if not heat or coast >= top:
+            return coast, 0.0
+        level = outside + PLAN_HEATER_RATE / PLAN_LOSS
+        full = level + (temp - level) * math.exp(-PLAN_LOSS * hours)
+        if full <= top:
+            return full, 1.0
+        return top, (top - coast) / (full - coast)
+
+    def _earliest(self, water, start, target):
+        temp = water
+        for i in range(144):
+            if temp >= target - 0.25:
+                return start + i * PLAN_STEP
+            temp = self._simulate(temp, True, self._outside_at(start + i * PLAN_STEP), target)[0]
+        return 0
+
+    @staticmethod
+    def _likelihood(weekend, hour):
+        """The starting likelihoods from src/scheduler/usage_model.cpp."""
+        return (0.02 if hour < 7 else 0.03 if hour < 10 else (0.15 if weekend else 0.05) if hour < 17
+                else 0.15 if hour < 18 else 0.4 if hour < 23 else 0.1)
+
+    def _ready_within(self, epoch):
+        """Hours of heat-up allowed at a time."""
+        when = datetime.fromtimestamp(epoch)
+        p = self._likelihood(when.weekday() >= 5, when.hour)
+        return 0.5 if p >= 0.25 else 2.0 if p >= 0.04 else 4.0
+
+    def _readiness(self, comfort, hours, outside):
+        level = outside + PLAN_HEATER_RATE / PLAN_LOSS
+        return comfort if level <= comfort else level - (level - comfort) * math.exp(PLAN_LOSS * hours)
+
+    def _plan(self, water, start, count, target, ready, hours, auto=False):
+        floor = self.config["smart"]["minTemp"]
+        steps = []
+        for i in range(count):
+            end = start + (i + 1) * PLAN_STEP
+            outside = self._outside_at(end - 450)
+            need = floor if floor < target else None
+            if auto:
+                ready_temp = min(self.comfort, self._readiness(self.comfort, self._ready_within(end), outside))
+                need = max(need or floor, ready_temp)
+            if ready is not None and ready <= end < ready + hours * 3600:
+                need = target
+            steps.append({"price": self._price(start + i * PLAN_STEP), "outside": outside, "min": need})
+        lo = coast = water
+        for step in steps:
+            coast = self._simulate(coast, False, step["outside"], target)[0]
+            lo = min(lo, coast)
+        lo -= 0.25
+        points = int(math.ceil((max(water, target) + 0.25 - lo) / 0.25)) + 1
+        short = lambda step, temp: 0 if step["min"] is None else max(0, step["min"] - temp)
+
+        def cost_at(row, temp):
+            pos = min(max((temp - lo) / 0.25, 0), points - 1)
+            i = min(int(pos), points - 2)
+            return row[i] + (row[i + 1] - row[i]) * (pos - i)
+        kwh = self.config["power"]["heaterKw"] * PLAN_STEP / 3600
+        later, policy = [0.0] * points, [None] * count
+        for s in range(count - 1, -1, -1):
+            step, row, choice = steps[s], [0.0] * points, [False] * points
+            for i in range(points):
+                temp = lo + i * 0.25
+                off = self._simulate(temp, False, step["outside"], target)
+                on = self._simulate(temp, True, step["outside"], target)
+                off_cost = short(step, off[0]) * 100 + cost_at(later, off[0])
+                on_cost = on[1] * kwh * step["price"] + short(step, on[0]) * 100 + cost_at(later, on[0])
+                choice[i] = on_cost < off_cost - 1e-6
+                row[i] = on_cost if choice[i] else off_cost
+            policy[s], later = choice, row
+        temp, out, cost, worst, used = water, [], 0.0, 0.0, 0.0
+        for s, step in enumerate(steps):
+            temp, f = self._simulate(temp, policy[s][int(min(max((temp - lo) / 0.25, 0), points - 1))],
+                                     step["outside"], target)
+            cost, used, worst = cost + f * kwh * step["price"], used + f * kwh, max(worst, short(step, temp))
+            out.append({"heat": round(f, 2), "temp": round(temp, 1), "price": step["price"],
+                        "outside": round(step["outside"]), **({"min": step["min"]} if step["min"] else {})})
+        return {"steps": out, "cost": cost, "kwh": used, "shortfall": worst}
+
+    def plan_json(self, query):
+        with self.lock:
+            now = int(time.time())
+            start = now - now % PLAN_STEP
+            water = self.state["waterTemp"]
+            target = float(query.get("target", [self.state["setTemp"]])[0])
+            hours = float(query.get("hours", [2])[0])
+            requested = int(query.get("readyAt", [0])[0])
+            asap = self._earliest(water, start, target)
+            ready = max(requested, asap) if requested else asap
+            count = min(144, (ready + int(hours * 3600) - start) // PLAN_STEP + 2)
+            plan = self._plan(water, start, count, target, ready, hours)
+            leave = self._plan(water, start, count, target, asap, (ready - asap) / 3600 + hours)
+            return {"start": start, "stepSec": PLAN_STEP, "waterTemp": water, "target": target, "hours": hours,
+                    "readyAt": ready, "asapReadyAt": asap, "reachable": asap != 0,
+                    "kwh": round(plan["kwh"], 2), "cost": round(plan["cost"], 3), "shortfall": round(plan["shortfall"], 1),
+                    "leaveOn": {"kwh": round(leave["kwh"], 2), "cost": round(leave["cost"], 3)}, "steps": plan["steps"]}
+
+    def _in_use(self):
+        s = self.state
+        return s["jet1Speed"] == 2 or s["jet2Speed"] > 0 or s["blower"] or s["light"]
+
+    def _manual_change(self, value):
+        self.comfort = value
+        if self.soak or self.config["smart"]["auto"]:
+            self.soak = None
+            self.auto_plan = None
+            now = int(time.time())
+            self.manual = {"since": now, "temp": value, "until": now + 4 * 3600}
+
+    def _smart_command(self, action, cmd):
+        s, now = self.state, int(time.time())
+        if action == "resumeSmart":
+            self.manual = None
+            return 202, "smart heating resumed"
+        if action == "cancelSoak":
+            if self.soak:
+                if self._in_use():
+                    self.manual = {"since": now, "temp": s["setTemp"], "until": now + 3600}
+                elif not self.config["smart"]["auto"]:
+                    s["setTemp"] = self.soak["restore"]
+                self.soak = None
+            return 202, "soak cancelled"
+        target, hours, ready = float(cmd.get("target", s["setTemp"])), float(cmd.get("hours", 2)), int(cmd.get("readyAt") or 0)
+        if not 80 <= target <= 104:
+            return 400, "target must be 80-104°F"
+        if not 0.5 <= hours <= 6:
+            return 400, "soak length must be 30 minutes to 6 hours"
+        if ready and not now <= ready <= now + 30 * 3600:
+            return 400, "ready time must be within the next 30 hours"
+        start = now - now % PLAN_STEP
+        asap = not ready
+        ready = ready or self._earliest(s["waterTemp"], start, target)
+        count = min(144, (ready + int(hours * 3600) - start) // PLAN_STEP + 2)
+        restore = self.soak["restore"] if self.soak else s["setTemp"]
+        self.soak = {"target": round(target), "readyAt": ready, "hours": hours, "asap": asap, "restore": restore,
+                     "start": start, "plan": None if asap else self._plan(s["waterTemp"], start, count, target, ready, hours)}
+        self.manual = None
+        return 202, "soak scheduled"
+
+    def _soak_setpoint(self, now):
+        soak = self.soak
+        if soak["asap"] or now >= soak["readyAt"] or not soak["plan"]:
+            return soak["target"]
+        return self._plan_setpoint(soak["plan"]["steps"], soak["start"], soak["target"], now)
+
+    def _plan_setpoint(self, steps, start, target, now):
+        s = (now - start) // PLAN_STEP
+        if s >= len(steps):
+            return target
+        run = []
+        heating = steps[s]["heat"] > 0
+        while s < len(steps) and (steps[s]["heat"] > 0) == heating:
+            run.append(steps[s]["temp"])
+            s += 1
+        if heating:
+            return min(target, math.ceil(max(run) - 0.05))
+        return max(self.config["smart"]["minTemp"], math.floor(min(run)) - 2)
+
+    def _step_smart(self):
+        now = int(time.time())
+        if not self.state["tempRangeHigh"]:
+            self.soak, self.auto_plan = None, None  # like the firmware: the low range turns smart heating off
+            return
+        if self.manual:
+            if self._in_use():
+                self.manual["until"] = max(self.manual["until"], now + 3600)
+            elif now >= self.manual["until"]:
+                self.manual = None
+            return
+        if not self.soak:
+            if self.config["smart"]["auto"]:
+                start = now - now % PLAN_STEP
+                if not self.auto_plan or self.auto_plan["start"] != start:
+                    plan = self._plan(self.state["waterTemp"], start, 144, self.comfort, None, 0, auto=True)
+                    hold = self._plan(self.state["waterTemp"], start, 144, self.comfort, start, 36)
+                    # Both sides end the window at comfort, like the firmware's comparison.
+                    fair = self._plan(self.state["waterTemp"], start, 144, self.comfort, start + 143 * PLAN_STEP, 0.25, auto=True)
+                    self.auto_plan = {"start": start, "steps": plan["steps"], "cost": plan["cost"], "kwh": plan["kwh"],
+                                      "compare": {"holdCost": round(hold["cost"], 3), "holdKwh": round(hold["kwh"], 2),
+                                                  "smartCost": round(fair["cost"], 3), "smartKwh": round(fair["kwh"], 2)}}
+                want = float(self._plan_setpoint(self.auto_plan["steps"], start, self.comfort, now))
+                if not (self._in_use() and want < self.state["setTemp"]):
+                    self.state["setTemp"] = want
+            else:
+                self.auto_plan = None
+            return
+        soak = self.soak
+        if self._in_use() and now >= soak["readyAt"]:
+            soak["lastUse"] = now
+        end = max(soak["readyAt"] + int(soak["hours"] * 3600), soak.get("lastUse", 0) + 1800)
+        if now >= end and not self._in_use():
+            if not self.config["smart"]["auto"]:
+                self.state["setTemp"] = soak["restore"]
+            self.soak = None
+            return
+        want = float(self._soak_setpoint(now))
+        if not (self._in_use() and want < self.state["setTemp"]):
+            self.state["setTemp"] = want
+
+    def smart_json(self, now, plan=False):
+        auto = self.config["smart"]["auto"]
+        mode = ("lowRange" if not self.state["tempRangeHigh"] else "manual" if self.manual else "soak" if self.soak
+                else "auto" if auto else "idle")
+        out = {"mode": mode,
+               "comfortTemp": self.comfort}
+        water, outside = self.state["waterTemp"], self._outside_at(now)
+        level = outside + PLAN_HEATER_RATE / PLAN_LOSS
+        out["readyInMin"] = (0 if water >= self.comfort else -1 if self.comfort >= level else
+                             round(math.log((level - water) / (level - self.comfort)) / PLAN_LOSS * 60))
+        if out["mode"] == "auto" and self.auto_plan:
+            steps, s = self.auto_plan["steps"], (now - self.auto_plan["start"]) // PLAN_STEP
+            out["auto"] = {"phase": "heating" if s < len(steps) and steps[s]["heat"] > 0 else "waiting",
+                           "nextHeatAt": next((max(now, self.auto_plan["start"] + i * PLAN_STEP)
+                                               for i in range(s, len(steps)) if steps[i]["heat"] > 0), None)}
+        if self.manual:
+            out["manual"] = dict(self.manual)
+        if self.soak:
+            soak = self.soak
+            info = {k: soak[k] for k in ("target", "readyAt", "hours", "asap")}
+            info["endsAt"] = max(soak["readyAt"] + int(soak["hours"] * 3600), soak.get("lastUse", 0) + 1800)
+            if now >= soak["readyAt"]:
+                info["phase"] = "ready"
+            elif soak["asap"]:
+                info["phase"] = "heating"
+            else:
+                steps, s = soak["plan"]["steps"], (now - soak["start"]) // PLAN_STEP
+                info["phase"] = "heating" if s < len(steps) and steps[s]["heat"] > 0 else "waiting"
+                info["nextHeatAt"] = next((max(now, soak["start"] + i * PLAN_STEP) for i in range(s, len(steps))
+                                           if steps[i]["heat"] > 0), None)
+                info["cost"] = round(soak["plan"]["cost"], 2)
+            out["soak"] = info
+        if plan and not self.soak and self.auto_plan and not self.manual:
+            p = self.auto_plan
+            out["plan"] = {"start": p["start"], "stepSec": PLAN_STEP, "target": self.comfort, "kwh": round(p["kwh"], 2),
+                           "cost": round(p["cost"], 3), "compare": p["compare"], "steps": p["steps"]}
+        elif plan:
+            p = self.soak and self.soak["plan"]
+            out["plan"] = {"start": self.soak["start"], "stepSec": PLAN_STEP, "kwh": round(p["kwh"], 2),
+                           "cost": round(p["cost"], 3), "steps": p["steps"]} if p else None
+        if plan:
+            out["usage"] = {kind: [self._likelihood(kind == "weekend", slot // 2) for slot in range(48)]
+                            for kind in ("workday", "weekend")}
+        return out
+
     def config_json(self):
         with self.lock:
             return {"type": "config", "data": {**self.config, "filterCycles": dict(self.filters)}}
@@ -726,6 +1001,10 @@ class MockSpa:
             self.config["tou"]["rates"].update(tou.pop("rates", {}))
             self.config["tou"].update(tou)
             self.config["power"].update(body.get("power", {}))
+            was_auto = self.config["smart"]["auto"]
+            self.config["smart"].update(body.get("smart", {}))
+            if was_auto and not self.config["smart"]["auto"] and not self.soak and not self.manual:
+                self.state["setTemp"] = self.comfort  # like the firmware: turning Auto off puts comfort back
 
     def force(self, fields):
         """POST /mock: overwrite any state field, plus a few extras."""
@@ -787,6 +1066,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "total": len(self.spa.faults), "entries": self.spa.faults},
             "/api/runtime": lambda: self.spa.runtime_json(),
             "/api/thermal": lambda: self.spa.thermal_json(),
+            "/api/plan": lambda: self.spa.plan_json(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)),
+            "/api/smart": lambda: self.spa.smart_json(int(time.time()), plan=True),
             "/api/maintenance": lambda: self.spa.maintenance_json(),
             "/api/water": lambda: self.spa.water_json(),
             "/api/debug-log": None,

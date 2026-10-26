@@ -218,6 +218,12 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
   if (input["power"].is<JsonObjectConst>() && !validatePower(input["power"], next, error)) {
     return false;
   }
+  if (input["smart"].is<JsonObjectConst>()) {
+    if (!setIntIfPresent(input["smart"], "minTemp", next.smartMinTemp, 50, 104, "lowest temp must be 50-104°F", error)) {
+      return false;
+    }
+    setBoolIfPresent(input["smart"], "auto", next.smartAuto);
+  }
 
   *error = nullptr;
   return true;
@@ -271,6 +277,10 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
   power["pump2Kw"] = config.power.pump2Kw;
   power["standbyW"] = config.power.standbyW;
   power["tubGallons"] = config.power.tubGallons;
+
+  JsonObject smart = out["smart"].to<JsonObject>();
+  smart["minTemp"] = config.smartMinTemp;
+  smart["auto"] = config.smartAuto;
 }
 
 void configFromJson(JsonVariantConst input, DeviceConfig &config) {

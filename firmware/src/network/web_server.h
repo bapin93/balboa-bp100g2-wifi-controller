@@ -7,6 +7,7 @@
 
 #include "balboa/spa.h"
 #include "network/weather_client.h"
+#include "scheduler/smart_heat.h"
 #include "scheduler/thermal_model.h"
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
@@ -17,7 +18,7 @@ class WebServerHub {
  public:
   WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config, const RuntimeLog &runtime,
                MaintenanceLog &maintenance, WaterLog &water, const ThermalModel &thermal,
-               const WeatherClient &weather);
+               const WeatherClient &weather, SmartHeat &smart);
 
   void begin();
   void loop();
@@ -36,7 +37,9 @@ class WebServerHub {
   void sendState(AsyncWebServerRequest *request);
   void sendJson(AsyncWebServerRequest *request, const std::function<void(JsonObject)> &fill);
   void sendConfig(AsyncWebServerRequest *request);
+  void sendPlanPreview(AsyncWebServerRequest *request);
   void sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result);
+  Balboa::CommandResult runCommand(JsonVariantConst command);
   void persistFilterCyclesRead();
   String stateJson();
   String commandResultJson(const Balboa::CommandResult &result);
@@ -53,6 +56,7 @@ class WebServerHub {
   WaterLog &water_;
   const ThermalModel &thermal_;
   const WeatherClient &weather_;
+  SmartHeat &smart_;
   uint32_t lastBroadcastMs_ = 0;
   bool stateBroadcastPending_ = false;
 };

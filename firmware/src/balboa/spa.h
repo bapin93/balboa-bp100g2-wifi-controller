@@ -75,6 +75,9 @@ class SpaController {
   void enableBenchMode();
 
   const SpaState &state() const { return state_; }
+  // The live reading, or the last one while the spa isn't reporting; NAN if there has never been one.
+  float currentWaterTemp() const { return isnan(state_.waterTemp) ? lastWaterTemp_ : state_.waterTemp; }
+  uint32_t lastWaterTempAt() const { return lastWaterTempAt_; }  // Unix time, 0 if unknown
   bool hasFreshState() const;
   void setUserCapabilities(bool setTime, bool hideJet2);
   // The spa only reports water temperature after the pump runs past its sensor (every 30-120 min with M8),

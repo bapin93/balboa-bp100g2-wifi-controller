@@ -338,7 +338,8 @@ function renderState(data) {
     button.classList.toggle("active", !!active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
-  $("#holdButtonState").textContent = data.hold ? `${data.holdMinutes} min` : "";
+  $("#holdToggle").textContent = data.hold ? "End Hold" : "Start Hold";
+  $("#holdStatus").textContent = data.hold ? `On · ${data.holdMinutes} min left` : "Off";
   renderPumps(data, caps);
   renderOverview(data, caps);
   const maintRefreshMs = $("#maintenance").classList.contains("active") ? 60000 : 600000;
@@ -348,6 +349,7 @@ function renderState(data) {
     loadWater().catch((error) => console.warn("[bp100g2] water log failed", error));
   }
   renderBanners(data);
+  renderSmart(data);
   if (state.pumpSeq !== null && data.pumpCommand?.seq > state.pumpSeq && !data.pumpCommand.ok) {
     showToast(data.pumpCommand.message);
   }
@@ -463,6 +465,192 @@ function setupJetButtons() {
   $("#pumpMenuCancel").addEventListener("click", closePumpMenu);
   $("#pumpMenu").addEventListener("click", (event) => {
     if (event.target.id === "pumpMenu") closePumpMenu();
+  });
+}
+
+// ── smart heating: planned soaks and the manual hold ──
+
+// "7:30 PM", or "Tue 7:30 PM" when it isn't today.
+function epochTimeLabel(epoch) {
+  const when = new Date(epoch * 1000);
+  const time = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return when.toDateString() === new Date().toDateString()
+    ? time : `${when.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+}
+
+// "1h 05m to 102°", or "102° now" once it's there.
+function readyInText(minutes, comfort) {
+  if (minutes < 0) return `can't reach ${comfort}° in this weather`;
+  if (minutes < 5) return `${comfort}° now`;
+  return `${hoursMinutes(minutes * 60)} to ${comfort}°`;
+}
+
+function renderSmart(data) {
+  const smart = data.smart || {};
+  const soak = smart.soak;
+  let text = "";
+  let action = "";
+  let quiet = false;
+  if (smart.mode === "lowRange") {
+    text = "Low range · smart heating is off until you switch back to high";
+    quiet = true;
+  } else if (smart.mode === "auto" && Number.isFinite(smart.comfortTemp)) {
+    const auto = smart.auto || {};
+    const ready = Number.isFinite(smart.readyInMin) ? ` · ${readyInText(smart.readyInMin, smart.comfortTemp)}` : "";
+    const plan = auto.phase === "heating" ? "Warming up" : auto.nextHeatAt ? `Standby until ${epochTimeLabel(auto.nextHeatAt)}` : "Standby";
+    text = `${plan}${ready}`;
+    action = smart.readyInMin >= 5 ? "Heat Now" : "";
+    quiet = true;
+  } else if (smart.mode === "soak" && soak) {
+    if (soak.phase === "ready") {
+      text = `Soak at ${soak.target}° until ${epochTimeLabel(soak.endsAt)}`;
+      action = "End";
+    } else if (soak.asap) {
+      text = `Heating to ${soak.target}° · ready about ${epochTimeLabel(soak.readyAt)}`;
+      action = "Cancel";
+    } else {
+      const heater = soak.phase === "heating" ? "heating now"
+        : soak.nextHeatAt ? `heater from ${epochTimeLabel(soak.nextHeatAt)}` : "";
+      text = [`Soak ${soak.target}° at ${epochTimeLabel(soak.readyAt)}`, heater].filter(Boolean).join(" · ");
+      action = "Cancel";
+    }
+  } else if (smart.mode === "manual" && smart.manual) {
+    text = `Your ${smart.manual.temp}° holds until ${epochTimeLabel(smart.manual.until)}`;
+    action = "Resume";
+  }
+  if (smart.error) text = text ? `${text} · ${smart.error}` : smart.error;
+  $("#smartBanner").classList.toggle("hidden", !text);
+  $("#smartBanner").classList.toggle("quiet", quiet);
+  $("#smartText").textContent = text;
+  $("#smartAction").hidden = !action;
+  $("#smartAction").textContent = action;
+  $("#smartAction").dataset.action = { manual: "resumeSmart", auto: "heatNow" }[smart.mode] || "cancelSoak";
+  $("#soakButton").classList.toggle("active", smart.mode === "soak");
+  $("#soakButtonState").textContent = smart.mode === "soak" && soak ? `${soak.target}°` : "";
+}
+
+const SoakPreviewDelayMs = 300;
+
+function soakRequest() {
+  const target = Math.round(Number($("#soakTarget").value));
+  const hours = Number($("#soakHours").value);
+  if ($("#soakWhen").value === "asap") return { target, hours, readyAt: 0 };
+  const [hour, minute] = ($("#soakTime").value || "19:30").split(":").map(Number);
+  const ready = new Date();
+  ready.setHours(hour, minute, 0, 0);
+  if (ready.getTime() <= Date.now()) ready.setDate(ready.getDate() + 1);  // already past: tomorrow
+  return { target, hours, readyAt: Math.floor(ready.getTime() / 1000) };
+}
+
+// Contiguous heated steps as [start, end, peak] in Unix time, up to the end of the soak.
+function heatWindows(plan, until) {
+  const cheapest = Math.min(...plan.steps.map((step) => step.price));
+  const windows = [];
+  plan.steps.forEach((step, i) => {
+    const start = plan.start + i * plan.stepSec;
+    if (step.heat <= 0 || start >= until) return;
+    const last = windows[windows.length - 1];
+    if (last && last.end === start) {
+      last.end = start + plan.stepSec;
+      last.peak ||= step.price > cheapest;
+    } else {
+      windows.push({ start, end: start + plan.stepSec, peak: step.price > cheapest });
+    }
+  });
+  return windows;
+}
+
+function soakPreviewText(plan, request) {
+  if (!plan.reachable) return `The heater can't reach ${request.target}° in this weather.`;
+  const ready = epochTimeLabel(plan.readyAt);
+  if (!request.readyAt) {
+    return `Heats straight through, ready about ${ready}. About ${moneyText(plan.leaveOn.cost)} of power.`;
+  }
+  const parts = [];
+  if (request.readyAt < plan.readyAt) {
+    parts.push(`Too soon to get there: the earliest is ${ready}.`);
+  } else if (plan.shortfall > 0.5) {
+    parts.push(`It will only reach about ${Math.round(request.target - plan.shortfall)}° by ${ready}.`);
+  }
+  const hot = heatWindows(plan, plan.readyAt);
+  if (hot.length) {
+    const label = (w) => `${epochTimeLabel(w.start)}–${new Date(w.end * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+    parts.push(`Heater runs ${hot.map(label).join(", ")}${hot.some((w) => w.peak) ? " (some on-peak)" : ""}, ready ${ready}.`);
+  } else {
+    parts.push(`Already warm enough; ready ${ready}.`);
+  }
+  const saved = plan.leaveOn.cost - plan.cost;
+  parts.push(`About ${moneyText(plan.cost)} of power${saved >= 0.01 ? `, ${moneyText(saved)} less than turning it up now` : ""}.`);
+  return parts.join(" ");
+}
+
+async function refreshSoakPreview() {
+  const request = soakRequest();
+  const preview = $("#soakPreview");
+  if (!(request.target >= 80 && request.target <= 104)) {
+    preview.textContent = "Pick 80–104°.";
+    return;
+  }
+  const seq = (state.soakPreviewSeq = (state.soakPreviewSeq || 0) + 1);
+  preview.textContent = "Planning…";
+  const params = new URLSearchParams({ target: request.target, hours: request.hours });
+  if (request.readyAt) params.set("readyAt", request.readyAt);
+  try {
+    const plan = await requestJson(`/api/plan?${params}`);
+    if (seq === state.soakPreviewSeq) preview.textContent = soakPreviewText(plan, request);
+  } catch (error) {
+    if (seq === state.soakPreviewSeq) preview.textContent = error.message;
+  }
+}
+
+function openSoakSheet() {
+  const data = state.data || {};
+  const soak = data.smart?.soak;
+  const fallback = Math.max(80, Math.min(104, Math.round(data.setTemp || 102)));
+  $("#soakTarget").value = soak?.target ?? fallback;
+  $("#soakHours").value = String(Math.min(4, Math.max(1, Math.round(soak?.hours ?? 2))));
+  $("#soakWhen").value = soak && !soak.asap ? "at" : "asap";
+  if (soak && !soak.asap) {
+    const ready = new Date(soak.readyAt * 1000);
+    $("#soakTime").value = `${String(ready.getHours()).padStart(2, "0")}:${String(ready.getMinutes()).padStart(2, "0")}`;
+  } else if (!$("#soakTime").value) {
+    $("#soakTime").value = "19:30";
+  }
+  $("#soakTimeRow").hidden = $("#soakWhen").value !== "at";
+  $("#soakSheetTitle").textContent = soak ? "Change Soak" : "Plan a Soak";
+  $("#soakConfirm").textContent = soak ? "Update" : "Schedule";
+  $("#soakSheet").classList.remove("hidden");
+  refreshSoakPreview();
+}
+
+function closeSoakSheet() {
+  $("#soakSheet").classList.add("hidden");
+}
+
+function setupSoak() {
+  let timer = null;
+  const later = () => {
+    clearTimeout(timer);
+    timer = setTimeout(refreshSoakPreview, SoakPreviewDelayMs);
+  };
+  $("#soakButton").addEventListener("click", openSoakSheet);
+  $("#soakWhen").addEventListener("change", () => {
+    $("#soakTimeRow").hidden = $("#soakWhen").value !== "at";
+    later();
+  });
+  ["soakTarget", "soakTime", "soakHours"].forEach((id) => $(`#${id}`).addEventListener("input", later));
+  $("#soakCancel").addEventListener("click", closeSoakSheet);
+  $("#soakSheet").addEventListener("click", (event) => {
+    if (event.target.id === "soakSheet") closeSoakSheet();
+  });
+  $("#soakConfirm").addEventListener("click", async () => {
+    const result = await sendCommand({ action: "soak", ...soakRequest() });
+    if (result) closeSoakSheet();
+  });
+  $("#smartAction").addEventListener("click", (event) => {
+    const action = event.target.dataset.action;
+    // Heat Now is an as-soon-as-possible soak at the comfort temp.
+    sendCommand(action === "heatNow" ? { action: "soak", target: state.data?.smart?.comfortTemp, hours: 2 } : { action });
   });
 }
 
@@ -605,6 +793,168 @@ function hourLabel(epoch, withDay = false) {
   const options = { hour: "numeric" };
   if (withDay) options.weekday = "short";
   return new Date(epoch * 1000).toLocaleString(undefined, options);
+}
+
+// Smart Standby's plan: predicted water against the "ready line" it must stay above, heater use and the
+// TOU peak behind it.
+function renderPlanChart() {
+  const container = $("#planChart");
+  const tip = chartTooltip(container);
+  container.querySelector("svg")?.remove();
+  tip.hidden = true;
+  const smart = state.smartPlan;
+  const plan = smart?.plan;
+  $("#planLegend").hidden = !plan?.steps?.length;
+  if (!plan?.steps?.length) {
+    $("#planSummary").textContent = "";
+    $("#planNote").textContent = !smart ? "Needs a firmware update."
+      : smart.mode === "lowRange" ? "Off while the spa is in the low temp range."
+      : smart.mode === "manual" ? "Paused while your own temperature holds."
+      : smart.mode === "idle" ? "Turn on Smart Standby in Settings → General, or plan a soak from the dashboard."
+      : "Waiting for a water temperature reading to plan from.";
+    return;
+  }
+  const compare = plan.compare;
+  const hours = (plan.steps.length * plan.stepSec) / 3600;
+  const saved = compare ? compare.holdCost - compare.smartCost : 0;
+  $("#planSummary").textContent = !compare ? `About ${moneyText(plan.cost)} of heat for this soak`
+    : saved >= 0.01 ? `About ${moneyText(saved)} less than holding ${plan.target}° over these ${Math.round(hours)} hours (≈ ${moneyText(saved * 730 / hours)} a month at this pace)`
+    : `About the same as holding ${plan.target}° over these ${Math.round(hours)} hours`;
+  $("#planNote").textContent = "A plan from the heating model and forecast, redone every 15 minutes. The comparison has both ending the window at the comfort temp; it counts heating only, not soaks or the cover being off.";
+
+  const step = plan.stepSec;
+  const t0 = plan.start;
+  const t1 = t0 + plan.steps.length * step;
+  const water = plan.steps.map((s, i) => ({ t: t0 + (i + 1) * step, v: s.temp }));
+  const ready = plan.steps.map((s, i) => ({ t: t0 + i * step, v: s.min }));
+  const cheapest = Math.min(...plan.steps.map((s) => s.price ?? Infinity));
+  const width = container.clientWidth || 340;
+  const pad = { left: 30, right: 8, top: 6 };
+  const tempHeight = 120;
+  const heatTop = pad.top + tempHeight + 22;
+  const heatHeight = 24;
+  const height = heatTop + heatHeight + 20;
+  const x = (t) => pad.left + ((t - t0) / (t1 - t0)) * (width - pad.left - pad.right);
+  const values = [...water.map((p) => p.v), ...ready.filter((p) => Number.isFinite(p.v)).map((p) => p.v)];
+  const scale = temperatureScale(Math.min(...values) - 2, Math.max(...values) - 3);
+  const y = (v) => pad.top + tempHeight - ((v - scale.min) / (scale.max - scale.min)) * tempHeight;
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, height, role: "img",
+    "aria-label": "Planned spa water temperature over the next 36 hours, the minimum it must stay above, and planned heater use" });
+  // Peak windows first so everything else draws over them; one band per run of peak steps.
+  plan.steps.forEach((s, i) => {
+    if (!(s.price > cheapest) || plan.steps[i - 1]?.price > cheapest) return;
+    let end = i;
+    while (plan.steps[end + 1]?.price > cheapest) end += 1;
+    const left = x(t0 + i * step);
+    svgEl("rect", { x: left, y: pad.top, width: x(t0 + (end + 1) * step) - left, height: heatTop + heatHeight - pad.top,
+      fill: "var(--chart-peak-band)" }, svg);
+  });
+  scale.ticks.forEach((tick) => {
+    svgEl("line", { x1: pad.left, x2: width - pad.right, y1: y(tick), y2: y(tick), stroke: "var(--chart-grid)", "stroke-width": 1 }, svg);
+    svgEl("text", { x: pad.left - 6, y: y(tick) + 3, "text-anchor": "end" }, svg).textContent = `${tick}°`;
+  });
+  for (let t = Math.ceil(t0 / 3600) * 3600; t <= t1; t += 3600) {
+    if (new Date(t * 1000).getHours() % 6 !== 0) continue;
+    const label = svgEl("text", { x: x(t), y: height - 4, "text-anchor": "middle" }, svg);
+    label.textContent = new Date(t * 1000).getHours() === 0 ? hourLabel(t, true).split(" ")[0] : hourLabel(t);
+  }
+  let readyPath = "";
+  ready.forEach((p, i) => {
+    if (!Number.isFinite(p.v)) return;
+    const jump = i === 0 || !Number.isFinite(ready[i - 1].v);
+    readyPath += `${jump ? "M" : "L"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}H${x(p.t + step).toFixed(1)}`;
+  });
+  svgEl("path", { d: readyPath, fill: "none", stroke: "var(--chart-set)", "stroke-width": 1.5, "stroke-dasharray": "4 3" }, svg);
+  svgEl("path", { d: linePath(water, x, y, step * 2), fill: "none", stroke: "var(--chart-water)",
+    "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+
+  svgEl("text", { x: pad.left, y: heatTop - 6, class: "panel-label" }, svg).textContent = "HEATER";
+  svgEl("line", { x1: pad.left, x2: width - pad.right, y1: heatTop + heatHeight, y2: heatTop + heatHeight, stroke: "var(--chart-grid)", "stroke-width": 1 }, svg);
+  plan.steps.forEach((s, i) => {
+    if (!(s.heat > 0)) return;
+    const h = Math.max(2, s.heat * heatHeight);
+    const left = x(t0 + i * step);
+    svgEl("rect", { x: left, y: heatTop + heatHeight - h, width: Math.max(1, x(t0 + (i + 1) * step) - left - 0.5), height: h,
+      rx: 1, fill: "var(--chart-heater)" }, svg);
+  });
+
+  const cursor = svgEl("line", { y1: pad.top, y2: heatTop + heatHeight, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
+  const hit = svgEl("rect", { x: pad.left, y: 0, width: width - pad.left - pad.right, height: heatTop + heatHeight, fill: "transparent" }, svg);
+  const show = (clientX) => {
+    const box = svg.getBoundingClientRect();
+    const t = t0 + ((clientX - box.left - pad.left) / (width - pad.left - pad.right)) * (t1 - t0);
+    const i = Math.max(0, Math.min(plan.steps.length - 1, Math.floor((t - t0) / step)));
+    const s = plan.steps[i];
+    const cx = x(t0 + (i + 0.5) * step);
+    cursor.setAttribute("x1", cx);
+    cursor.setAttribute("x2", cx);
+    cursor.setAttribute("visibility", "visible");
+    const rows = [{ value: `${s.temp.toFixed(1)}°F`, label: "Planned", key: "water" }];
+    if (Number.isFinite(s.min)) rows.push({ value: `${s.min.toFixed(1)}°F`, label: "Ready line", key: "set dashed" });
+    rows.push({ value: `${Math.round(s.heat * 15)} min`, label: "Heater", key: "heater" });
+    if (Number.isFinite(s.price)) rows.push({ value: `$${s.price.toFixed(3)}/kWh`, label: s.price > cheapest ? "Peak" : "Off-peak", key: null });
+    showTip(container, tip, epochTimeLabel(t0 + i * step), rows, cx);
+  };
+  hit.addEventListener("pointermove", (event) => show(event.clientX));
+  hit.addEventListener("pointerdown", (event) => show(event.clientX));
+  hit.addEventListener("pointerleave", () => {
+    cursor.setAttribute("visibility", "hidden");
+    tip.hidden = true;
+  });
+  container.prepend(svg);
+}
+
+// Matches UsageModel: likely above 0.25 (ready within 30 min), possible above 0.04 (2 h), else 4 h.
+function usageTier(p) {
+  return p >= 0.25 ? "likely · ready within 30 min" : p >= 0.04 ? "possible · within 2 h" : "unlikely · within 4 h";
+}
+
+function renderUsageChart() {
+  const container = $("#usageChart");
+  const tip = chartTooltip(container);
+  container.querySelector("svg")?.remove();
+  tip.hidden = true;
+  const usage = state.smartPlan?.usage;
+  if (!usage?.workday) return;
+  const rows = [["Workdays", usage.workday], ["Weekends", usage.weekend]];
+  const width = container.clientWidth || 340;
+  const labelWidth = 64;
+  const cellHeight = 22;
+  const gap = 1;
+  const height = rows.length * (cellHeight + 4) + 16;
+  const cell = (width - labelWidth) / 48;
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, height, role: "img",
+    "aria-label": "How often a soak starts in each half hour on workdays and weekends" });
+  rows.forEach(([name, values], r) => {
+    const top = r * (cellHeight + 4);
+    svgEl("text", { x: 0, y: top + cellHeight / 2 + 3 }, svg).textContent = name;
+    values.forEach((p, slot) => {
+      svgEl("rect", { x: labelWidth + slot * cell, y: top, width: Math.max(1, cell - gap), height: cellHeight, rx: 1.5,
+        fill: "var(--chart-water)", "fill-opacity": (0.08 + 0.92 * Math.min(1, p / 0.5)).toFixed(2) }, svg);
+    });
+  });
+  [0, 6, 12, 18, 24].forEach((hour) => {
+    const label = svgEl("text", { x: labelWidth + hour * 2 * cell, y: height - 2,
+      "text-anchor": hour === 0 ? "start" : hour === 24 ? "end" : "middle" }, svg);
+    label.textContent = ["12 AM", "6 AM", "12 PM", "6 PM", "12 AM"][hour / 6];
+  });
+  const hit = svgEl("rect", { x: labelWidth, y: 0, width: width - labelWidth, height: rows.length * (cellHeight + 4), fill: "transparent" }, svg);
+  const show = (clientX, clientY) => {
+    const box = svg.getBoundingClientRect();
+    const slot = Math.max(0, Math.min(47, Math.floor((clientX - box.left - labelWidth) / cell)));
+    const r = Math.max(0, Math.min(rows.length - 1, Math.floor((clientY - box.top) / (cellHeight + 4))));
+    const p = rows[r][1][slot];
+    const time = clock12Label(Math.floor(slot / 2), (slot % 2) * 30);
+    showTip(container, tip, `${rows[r][0]} ${time}`, [
+      { value: `${Math.round(p * 100)}%`, label: "of days", key: null },
+      { value: usageTier(p), label: "", key: null },
+    ], labelWidth + (slot + 0.5) * cell);
+  };
+  hit.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
+  hit.addEventListener("pointerdown", (event) => show(event.clientX, event.clientY));
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; });
+  container.prepend(svg);
 }
 
 function renderHoursChart() {
@@ -906,12 +1256,14 @@ function dayLabel(date) {
 }
 
 async function loadRuntime() {
-  const [message, thermal] = await Promise.all([
+  const [message, thermal, smart] = await Promise.all([
     requestJson("/api/runtime"),
     requestJson("/api/thermal").catch((error) => console.warn("[bp100g2] thermal failed", error)),
+    requestJson("/api/smart").catch((error) => console.warn("[bp100g2] smart plan failed", error)),
     loadWeather().catch((error) => console.warn("[bp100g2] weather failed", error)),
   ]);
   state.thermal = thermal || null;
+  state.smartPlan = smart || null;
   state.runtimeDays = message.days || [];
   state.runtimeHours = message.hours || [];
   state.runtimeLoadedAt = Date.now();
@@ -953,6 +1305,8 @@ function renderRuntime() {
   renderCostCard();
   renderThermal();
   if ($("#statsRuntime").classList.contains("active") && $("#stats").classList.contains("active")) {
+    renderPlanChart();
+    renderUsageChart();
     renderHoursChart();
     renderDailyChart();
   }
@@ -1880,6 +2234,19 @@ function padText(key, value) {
   return key === "ph" ? value.toFixed(1) : numberText(value);
 }
 
+// FROG @ease strips are read by which color zone the pad lands in, not in ppm.
+const SanLevelText = { 1: "Low", 2: "OK", 3: "High" };
+
+// Like padStatus, for a sanitizer pad that may have been read by color zone instead.
+function sanStatus(pad, target) {
+  if (!pad.level) return padStatus(pad.value, target);
+  return { level: pad.level === 2 ? "ok" : "near", dir: { 1: "low", 3: "high" }[pad.level] || null };
+}
+
+function sanText(pad, target) {
+  return pad.level ? `${SanLevelText[pad.level]} zone` : `${padText("san", pad.value)}${target.unit}`;
+}
+
 function rangeText([low, high]) {
   return `${numberText(low)}–${numberText(high)}`;
 }
@@ -1913,13 +2280,15 @@ function latestPads() {
     Object.keys(PadTargets).concat("san").forEach((key) => {
       if (Number.isFinite(entry[key])) pads[key] = { value: entry[key], ts: entry.ts };
     });
+    if (entry.sanLevel) pads.san = { level: entry.sanLevel, ts: entry.ts };
   });
   return pads;
 }
 
 function waterAdvice(pads) {
   const targets = padTargets();
-  const off = (key) => (pads[key] ? padStatus(pads[key].value, targets[key]).dir : null);
+  const off = (key) => (!pads[key] ? null
+    : key === "san" ? sanStatus(pads.san, targets.san).dir : padStatus(pads[key].value, targets[key]).dir);
   const frog = waterSystem() === "frog";
   const sanName = targets.san.name.toLowerCase();
   const tips = [];
@@ -1963,13 +2332,14 @@ function renderLatestTest(pads) {
   }
   const rows = ["san", "ph", "ta", "th"].filter((key) => pads[key]).map((key) => {
     const target = targets[key];
-    const { value, ts } = pads[key];
-    const status = padStatus(value, target);
-    const label = `${target.name} · ${rangeText(target.ok)}`;
-    const word = status.dir ? ` · ${status.dir === "low" ? "Low" : "High"}` : "";
+    const { value, ts, level } = pads[key];
+    const status = key === "san" ? sanStatus(pads.san, target) : padStatus(value, target);
+    const label = level ? target.name : `${target.name} · ${rangeText(target.ok)}`;
+    const word = status.dir && !level ? ` · ${status.dir === "low" ? "Low" : "High"}` : "";
     const older = ts !== latest.ts ? ` (${dateText(ts)})` : "";
     const className = status.level === "far" ? "bad" : status.level === "near" ? "due" : "";
-    return maintRow(label, `${padText(key, value)}${target.unit}${word}${older}`, className);
+    const text = key === "san" ? sanText(pads.san, target) : `${padText(key, value)}${target.unit}`;
+    return maintRow(label, `${text}${word}${older}`, className);
   });
   if (!latest) {
     rows.push(maintRow("Dip a strip and log what it reads.", "", "muted"));
@@ -2040,6 +2410,7 @@ function waterEntryText(entry) {
       const targets = padTargets();
       const pads = ["san", "ph", "ta", "th"].filter((key) => Number.isFinite(entry[key]))
         .map((key) => `${targets[key].short} ${padText(key, entry[key])}`);
+      if (entry.sanLevel) pads.unshift(`${targets.san.short} ${SanLevelText[entry.sanLevel]}`);
       return `Test · ${pads.join(" · ")}${note}`;
     }
     case "dose":
@@ -2071,7 +2442,8 @@ function renderWater() {
 
   const targets = padTargets();
   $("#waterTargets").textContent = `Targets: ${["san", "ph", "ta", "th"]
-    .map((key) => `${targets[key].name} ${rangeText(targets[key].ok)}${targets[key].unit}`)
+    .map((key) => (key === "san" && frog ? `${targets.san.name} in the strip's OK zone`
+      : `${targets[key].name} ${rangeText(targets[key].ok)}${targets[key].unit}`))
     .join(" · ")}.${frog ? " FROG @ease runs low chlorine; the SmartChlor dial sets how much." : ""}`;
 
   renderHistory(data.entries || [], "water", {
@@ -2115,7 +2487,12 @@ function openWaterSheet(sheet) {
   });
   $("#waterFields").hidden = action === "entry";
   $("#wSanLabel").textContent = SanitizerTargets[waterSystem()].name;
-  ["wSan", "wPh", "wTa", "wTh", "wChem", "wAmount", "wNote"].forEach((id) => { $(`#${id}`).value = ""; });
+  if (action === "reading") {
+    const frog = waterSystem() === "frog";
+    $("#wSanRow").hidden = frog;
+    $("#wSanLevelRow").hidden = !frog;
+  }
+  ["wSan", "wSanLevel", "wPh", "wTa", "wTh", "wChem", "wAmount", "wNote"].forEach((id) => { $(`#${id}`).value = ""; });
   $("#wAmount").placeholder = "";
   $("#wDial").value = String(state.water?.cartridges?.sanitizer?.dial ?? 3);
   $("#wLife").value = cartridge.lifeDays || 30;
@@ -2165,7 +2542,9 @@ function confirmWaterSheet() {
   const note = $("#wNote").value.trim();
   switch (sheet.action) {
     case "reading": {
-      const pads = { san: number("wSan"), ph: number("wPh"), ta: number("wTa"), th: number("wTh") };
+      const frog = waterSystem() === "frog";
+      const pads = { san: frog ? null : number("wSan"), sanLevel: frog ? number("wSanLevel") : null,
+        ph: number("wPh"), ta: number("wTa"), th: number("wTh") };
       Object.keys(pads).forEach((key) => { if (!Number.isFinite(pads[key])) delete pads[key]; });
       if (!Object.keys(pads).length) {
         showToast("Enter at least one reading");
@@ -2500,6 +2879,8 @@ function fillEnergySettings(config) {
   $("#rateSummerEnd").value = String(rates.summerEndMonth ?? 9);
   Object.entries(RateFields).forEach(([id, key]) => { $(`#${id}`).value = rates[key] ? rates[key] : ""; });
   Object.entries(PowerFields).forEach(([id, key]) => { $(`#${id}`).value = power[key] ?? ""; });
+  $("#smartMinTemp").value = config.smart?.minTemp ?? "";
+  $("#smartAuto").checked = config.smart?.auto !== false;
 }
 
 function setupEnergySettings() {
@@ -2530,6 +2911,8 @@ function setupEnergySettings() {
     save(value);
   });
   Object.entries(RateFields).forEach(([id, key]) => numberField(id, (value) => saveConfig({ tou: { rates: { [key]: value } } }, "Rate saved")));
+  numberField("smartMinTemp", (value) => saveConfig({ smart: { minTemp: Math.round(value) } }));
+  $("#smartAuto").addEventListener("change", (event) => saveConfig({ smart: { auto: event.target.checked } }));
   Object.entries(PowerFields).forEach(([id, key]) => numberField(id, (value) =>
     saveConfig({ power: { [key]: WholeNumberPower.includes(key) ? Math.round(value) : value } }, "Power saved")));
 }
@@ -2697,6 +3080,7 @@ function setupEvents() {
   setupJetButtons();
   setupMaintenance();
   setupWater();
+  setupSoak();
 
   $$(".subtab").forEach((tab) => tab.addEventListener("click", () => showSubtab(tab.dataset.subtab)));
   $$(".view").forEach((view) => {

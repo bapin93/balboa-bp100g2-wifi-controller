@@ -47,6 +47,8 @@ struct DeviceConfig {
   uint8_t filterCycle2StartMinute = 0;
   uint8_t filterCycle2Duration = 0;
   uint8_t filterCycle2DurationMinute = 0;
+  uint8_t smartMinTemp = 90;  // smart heating never plans or sets below this
+  bool smartAuto = true;  // keep the tub ready by usage when no soak is planned
   TouSchedule tou;
   EnergyRates rates;
   PowerSpecs power;

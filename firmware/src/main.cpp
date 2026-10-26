@@ -12,6 +12,7 @@
 #include "config.h"
 #include "network/weather_client.h"
 #include "network/web_server.h"
+#include "scheduler/smart_heat.h"
 #include "scheduler/thermal_model.h"
 #include "scheduler/tou.h"
 #include "storage/store.h"
@@ -36,6 +37,7 @@ MaintenanceLog maintenance;
 WaterLog water;
 ThermalModel thermal;
 WeatherClient weather;
+SmartHeat smart(spa, store, deviceConfig, thermal, weather);
 uint32_t lastRuntimeTickMs = 0;
 uint32_t lastRuntimeSaveMs = 0;
 bool wifiConnected = false;
@@ -221,8 +223,7 @@ void learnThermal(const Balboa::SpaState &state, uint32_t epoch) {
   sample.now = epoch;
   sample.waterTemp = state.waterTemp;
   sample.heating = state.heating;
-  // Filter cycles run pump 1 on low, so only high speed and the extras say someone is in.
-  sample.inUse = state.jet1Speed == 2 || (!deviceConfig.hideJet2 && state.jet2Speed > 0) || state.blower || state.light;
+  sample.inUse = smart.inUse();
   sample.outside = weather.outsideAt(epoch);
   thermal.observe(sample);
   if (thermal.dirty()) {
@@ -303,6 +304,7 @@ void setup() {
   store.loadThermal(thermal);
   applyConfigToModels();
   weather.begin();
+  smart.begin();
 
   Serial2.begin(AppConfig::SpaBaud, SERIAL_8N1, AppConfig::Rs485RxPin, AppConfig::Rs485TxPin);
   spa.begin(Serial2, AppConfig::Rs485TxEnablePin);
@@ -313,7 +315,7 @@ void setup() {
   setupWifi();
   setupTime();
 
-  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance, water, thermal, weather);
+  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance, water, thermal, weather, smart);
   web->begin();
 
   // A loop() stuck for 5 s panics and reboots, saving a crash report to the coredump partition.
@@ -331,6 +333,7 @@ void loop() {
 #endif
   spa.loop();
   trackRuntime();
+  smart.loop();
   if (web) {
     web->loop();
   }

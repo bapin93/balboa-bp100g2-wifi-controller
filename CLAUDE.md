@@ -54,7 +54,7 @@ MAX485:
 | Web app host | ESP32 LittleFS | No external server needed |
 | Web app stack | Vanilla HTML/CSS/JS | No build step, small footprint |
 | WiFi setup | WiFiManager captive portal | No hardcoded credentials |
-| Ambient temp | Open-Meteo API (free, no key) | Lat/lon only, tiny response |
+| Ambient temp | Open-Meteo hourly forecast (free, no key) | Lat/lon only; feeds the heating model and planner |
 | Time | NTP (built-in Arduino ESP32) | Needed for scheduling + spa sync |
 | HA integration | Optional MQTT via PubSubClient | Off by default, configurable |
 
@@ -72,14 +72,22 @@ firmware/
 │   │   ├── protocol.h/.cpp             # RS-485 frame parser & builder
 │   │   └── spa.h/.cpp                  # SpaState struct + command queue
 │   ├── network/
-│   │   ├── web_server.h/.cpp           # ESPAsyncWebServer + WebSocket hub
-│   │   ├── weather_client.h/.cpp       # Open-Meteo current temp fetch
-│   │   └── mqtt.h/.cpp                 # Optional HA MQTT bridge
-│   ├── scheduler/
-│   │   ├── session_scheduler.h/.cpp    # TOU-aware pre-heat planner
-│   │   └── heat_model.h/.cpp           # Heat rate model + linear regression
+│   │   ├── web_server.h/.cpp           # ESPAsyncWebServer + WebSocket hub + REST
+│   │   └── weather_client.h/.cpp       # Open-Meteo hourly forecast (own FreeRTOS task, plain HTTP)
+│   ├── scheduler/                      # Smart heating; everything but smart_heat is plain C++ with native tests
+│   │   ├── tou.h/.cpp                  # Peak windows, weekends, holiday sets
+│   │   ├── thermal_model.h/.cpp        # Learns heater rate + heat-loss coefficient from measured runs
+│   │   ├── heat_planner.h/.cpp         # DP planner: cheapest heater schedule meeting per-step min temps
+│   │   ├── usage_model.h/.cpp          # Learned soak likelihood per half hour (workday / weekend)
+│   │   ├── use_detector.h/.cpp         # "Someone is in the tub" from jets, light, blower
+│   │   ├── heat_controller.h/.cpp      # Auto / Soak / Manual modes -> set temp to send
+│   │   └── smart_heat.h/.cpp           # Glue: runs the controller against the spa, persistence, commands
 │   └── storage/
-│       └── store.h/.cpp                # LittleFS JSON read/write helpers
+│       ├── store.h/.cpp                # LittleFS/NVS read/write for everything below
+│       ├── config_model.h/.cpp         # DeviceConfig validation + JSON
+│       ├── runtime_log.h/.cpp          # Daily/hourly heater, pump, filter time (+ TOU peak split)
+│       ├── maintenance.h/.cpp          # Filters and recurring tasks (NVS)
+│       └── water_log.h/.cpp            # Test strips, chemicals, FROG cartridges
 └── data/                               # Uploaded to LittleFS (pio run -t uploadfs)
     ├── index.html
     ├── app.js
@@ -106,18 +114,17 @@ upload_protocol = esptool
 extra_scripts = pre:scripts/upload_fs.py   ; optional helper
 ```
 
-### Persistent Files in LittleFS
+### Persistent Files (the `userdata` LittleFS partition, so web uploads don't erase them)
 
 ```
-/config.json       # lat, lon, tou_start (17), tou_end (21), mqtt settings, backlight_timeout
-/schedules.json    # array of scheduled sessions
-/heat_history.json # last 200 heat sessions — prune oldest on write
+/config.json    # timezone, location, filter cycles, TOU + rates, power, tub volume, smart {minTemp, auto}
+/runtime.json   # 30 days + 48 hours of runtime totals
+/water.json     # water care log
+/thermal.json   # last 30 measured heating runs and cool-downs
+/smart.json     # comfort temp, active soak, manual hold
+/usage.json     # 2 x 48 soak likelihoods + the day being recorded
 ```
-
-`heat_history.json` record schema:
-```json
-{ "ts": 1715000000, "ambient": 58.0, "t_start": 95.5, "t_end": 102.0, "dur_min": 87 }
-```
+Maintenance lives in NVS instead.
 
 ---
 
@@ -157,141 +164,162 @@ struct SpaState {
 
 ---
 
-## Smart Features
+## Smart Heating
 
-### TOU-Aware Pre-heat Scheduler
+The only lever is the **set temperature** (heat mode is read-only). Lowering it never cools the water; it
+just lets the water drift down at its natural rate. Everything below decides what set temp to send.
 
-Peak electricity window: **5:00 PM – 9:00 PM** (configurable in `/config.json` as `tou_start`/`tou_end` in 24h hours).
+### Thermal model (`scheduler/thermal_model.cpp`)
 
-**Algorithm** (implement in `scheduler/session_scheduler.cpp`):
+Water follows `dT/dt = heaterRate (while heating) − lossCoeff × (water − outside)`.
 
-```
-heatingRate  = heatModel.predict(ambientTemp, currentWaterTemp)   // °F/hr
-hoursNeeded  = (targetTemp - currentWaterTemp) / heatingRate
-idealStart   = targetReadyTime - hoursNeeded
+- `heaterRate` (°F/hr the heater adds before losses) is seeded from heater kW and tub volume
+  (`kW × 3412 / (gallons × 8.34)`), then learned from heating runs of at least 20 min and 2°F.
+- `lossCoeff` (per hour) is seeded at 0.012, then learned from heater-off runs of at least 3 hours. It
+  needs the forecast.
+- Runs are timed edge to edge (the moments the whole-degree reading ticks) to get around the spa's 1°F
+  resolution. Runs while the tub is in use, plus 30 min after, are skipped (cover probably off).
+- Under 5 runs, the seed counts as one run in a mean; from 5 runs on, it's the median of the last 30.
+- The spa only reports water temp while its pump runs. Between readings, `SmartHeat` cools the last
+  reading by the model.
 
-if idealStart + hoursNeeded <= peakStart:
-    → schedule single heat window starting at idealStart
+### Weather (`network/weather_client.cpp`)
 
-else if targetReadyTime > peakEnd:
-    → heat from idealStart until peakStart, pause, resume at peakEnd
+The Open-Meteo hourly forecast (`hourly=temperature_2m&timeformat=unixtime&past_days=1&forecast_days=3`)
+is fetched hourly on its own FreeRTOS task, with a 5 min retry. It uses **plain HTTP** (TLS would cost
+~165 KB of flash) and `useHTTP10(true)`, because chunked replies break `getStream()` parsing. The browser
+still fetches its own history for the runtime charts.
 
-else (target falls inside peak, unavoidable):
-    → start at (targetReadyTime - hoursNeeded), heat straight through
-    → flag in UI: "⚡ Peak overlap unavoidable"
-```
+### Planner (`scheduler/heat_planner.cpp`)
 
-Schedules are stored in `/schedules.json`. The main loop checks every minute and sends set-temp / heat-mode commands at the planned times.
+Dynamic programming over water temp (0.25°F grid) × 15-min steps (up to 36 h). It chooses heat or coast
+per step to minimize heater kWh × that step's TOU price (`touPrice`: summer/winter rates, peak per
+`tou.cpp`; without rates, peak counts 2×). Each step has a `minTemp` requirement, and missing it costs
+$100/°F. Each step also has a `maxTemp` (the spa stops there). Memory stays small: one cost row plus one
+bit per (step, temp).
 
-### Heat Rate Model (implement in `scheduler/heat_model.cpp`)
+### Usage model (`scheduler/usage_model.cpp`)
 
-**Baseline** (used until ≥10 data points):
-```
-rate (°F/hr) = 1.0 + 0.035 * ambientTemp
-```
-Examples: 40°F → ~2.4°F/hr, 65°F → ~3.3°F/hr, 80°F → ~3.8°F/hr
+Soak likelihood per half hour, for workdays and for weekends + the utility's holidays. Starting values
+come from the owner: rarely after midnight, mornings or weekday daytime; weekend daytime sometimes;
+evenings likely. Each finished day nudges every slot toward 1 if a soak started there (½ for the
+neighbouring slots) or toward 0 if not. Workdays move at a rate of 1/20 per day, weekends at 1/8.
 
-**Learning**: After each completed heat session, log a data point to `heat_history.json`. Once 10+ points exist, fit a linear regression:
-```
-rate = a + b * ambient
-```
-Use simple least-squares. Store `a` and `b` in `/config.json`. This silently improves over time.
+A soak start is any of the following, after 2 quiet hours:
+- the use detector turning on;
+- a manual set-temp raise;
+- a planned soak reaching its ready time.
 
-After a heat session completes (set-temp was commanded → water reached target), record the data point automatically.
+**Use detector** (`use_detector.cpp`): jets high, jet 2, blower or light, or pump 1 on low for 10+ min
+with no filter cycle or heating to explain it.
 
-### Weather (implement in `network/weather_client.cpp`)
+Likelihood sets how long the owner will wait for heat-up:
 
-Open-Meteo endpoint (no API key needed):
-```
-https://api.open-meteo.com/v1/forecast
-  ?latitude={lat}
-  &longitude={lon}
-  &current=temperature_2m
-  &temperature_unit=fahrenheit
-  &forecast_days=1
-```
+| Likelihood | Ready within |
+|---|---|
+| ≥ 0.25 (likely) | 30 min |
+| ≥ 0.04 (possible) | 2 h |
+| otherwise | 4 h |
 
-Parse `current.temperature_2m` from the JSON response. Fetch every 30 minutes. Cache the last reading for scheduling calculations. Lat/lon stored in `/config.json`.
+### Controller modes (`scheduler/heat_controller.cpp`)
+
+- **Auto** (Smart Standby, `smart.auto`, on by default): each step's `minTemp` is the readiness temp
+  (`readinessTemp`), i.e. the coldest water that still reaches the **comfort temp** within that slot's
+  wait. It is never below `smart.minTemp` (90). The comfort temp is the last temp set by hand.
+- **Soak**: target temp held from `readyAt` for N hours, with the plan meeting it as cheaply as possible.
+  As soon as possible (`readyAt` 0) heats straight through. A soak runs on until 30 min after the last
+  use. When it ends, Auto takes over (or the old set temp is restored if Auto is off).
+- **Manual**: any set temp change the controller didn't send (app or spa panel) pauses everything. The
+  pause lasts until 1 h after the last use, or 4 h if the tub is never used. **Resume** ends it early.
+- **Low temp range**: the controller does nothing at all (no 90°F floor, any soak dropped), so the tub can
+  cool. The range switch itself doesn't count as a manual change, and switching back to high resumes Auto.
+
+Turning the plan into set temps:
+- While heating: the highest planned temp in that heating run.
+- While coasting: `max(minTemp, floor(lowest planned) − 2)`, so the spa steps in if the water cools
+  faster than planned.
+
+Rules:
+- Replan every 15 min from the current water temp.
+- Never lower the set temp while the tub is in use.
+- Do nothing on a stale spa state or before NTP has set the clock.
+
+`SmartHeat` runs this once a second, sends `setTemp` through the spa command queue, and saves
+`/smart.json` and `/usage.json`.
 
 ---
 
 ## WebSocket API (bidirectional JSON)
 
-### ESP32 → Browser (push on every state change, ~500ms)
+### ESP32 → Browser
+
+`{"type":"state","data":{...}}` holds the spa state (`SpaController::writeStateJson`), `capabilities`,
+and `smart`:
 ```json
-{
-  "type": "state",
-  "data": {
-    "waterTemp": 101.5, "setTemp": 102,
-    "jet1": true, "jet2": false,
-    "light": true, "heating": true, "heatMode": 0,
-    "filterCycle1": { "start": 6, "dur": 120 },
-    "filterCycle2": { "start": 18, "dur": 60, "enabled": true },
-    "backlightTimeout": 5,
-    "ambientTemp": 58.0,
-    "spaTime": "14:32",
-    "schedule": { "active": true, "readyAt": 1715120400, "targetTemp": 102,
-                  "heatWindows": [{"start": 1715112600, "end": 1715114400}] }
-  }
-}
+"smart": { "mode": "auto|soak|manual|idle", "comfortTemp": 102, "readyInMin": 45,
+           "auto": { "phase": "waiting|heating", "nextHeatAt": 1793051100 },
+           "soak": { "target": 104, "readyAt": 1793064600, "hours": 2, "asap": false, "endsAt": 1793071800,
+                     "phase": "waiting|heating|ready", "nextHeatAt": 1793048400, "cost": 1.12 },
+           "manual": { "since": 1793044745, "temp": 103, "until": 1793059145 },
+           "error": "only when a set temp command failed" }
 ```
 
-### Browser → ESP32 (commands)
+### Browser → ESP32 (also `POST /api/cmd`)
 ```json
-{ "type": "cmd", "action": "setTemp",          "value": 103 }
-{ "type": "cmd", "action": "jet1",             "value": true }
-{ "type": "cmd", "action": "jet2",             "value": false }
-{ "type": "cmd", "action": "light",            "value": true }
-{ "type": "cmd", "action": "heatMode",         "value": 0 }
-{ "type": "cmd", "action": "filterCycle1",     "start": 6, "dur": 120 }
-{ "type": "cmd", "action": "filterCycle2",     "start": 18, "dur": 60, "enabled": true }
-{ "type": "cmd", "action": "backlightTimeout", "value": 5 }
-{ "type": "cmd", "action": "syncTime" }
-{ "type": "cmd", "action": "scheduleSession",  "readyAt": 1715120400, "targetTemp": 102 }
-{ "type": "cmd", "action": "cancelSchedule" }
+{ "action": "setTemp", "value": 103 }
+{ "action": "togglePump", "pump": 1 }            { "action": "setPump", "pump": 1, "value": 2 }
+{ "action": "light", "value": true }             { "action": "hold", "value": true }
+{ "action": "tempRange", "value": "high" }       { "action": "syncTime" }
+{ "action": "setFilter1", "startHour": 2, "startMinute": 0, "durationHour": 3, "durationMinute": 0 }
+{ "action": "setFilter2", "enabled": true, "startHour": 14, ... }
+{ "action": "soak", "target": 104, "readyAt": 1793064600, "hours": 2 }   // readyAt 0/absent = ASAP
+{ "action": "cancelSoak" }                       { "action": "resumeSmart" }
 ```
+Also: `readFilterCycles`, `refreshSpaInfo`, `readFaultLog`, `clearReminder`, `start/stop/clearStatusCapture`.
 
 ## REST Endpoints
 
 ```
-GET  /api/state      → full SpaState JSON
-POST /api/cmd        → same body as WebSocket command
-GET  /api/schedule   → current + upcoming sessions
-GET  /api/history    → heat session log
-GET  /api/config     → all config values
-POST /api/config     → save config (lat/lon, TOU hours, MQTT, backlight)
+GET  /api/state        same as the WebSocket state message
+POST /api/cmd          a command (above)
+GET  /api/config       POST /api/config (partial updates; only the changed fields)
+GET  /api/runtime      daily + hourly runtime
+GET  /api/thermal      learned model, measured runs, forecast
+GET  /api/smart        smart state + the active plan (with a fair hold-comfort cost comparison) + usage grid
+GET  /api/plan         read-only soak preview: ?target=&readyAt=&hours= (plus a "turn it up now" cost)
+GET  /api/maintenance  POST /api/maintenance
+GET  /api/water        POST /api/water   (FROG readings use sanLevel 1 low / 2 OK / 3 high instead of ppm)
+GET  /api/spa-info  /api/faults  /api/system  /api/debug-log  /api/status-capture
 ```
 
 ---
 
 ## Web App UI (vanilla HTML/CSS/JS in `data/`)
 
-### Dashboard view
-- Current water temp + target temp with +/- buttons
-- Heating status indicator
-- Jet 1, Jet 2, Lights toggle buttons
-- Heat mode selector (Ready / Rest / Ready-in-Rest)
-- Spa time display + "Sync Time" button (triggers NTP → spa clock set)
-- "Schedule Session" button
+- **Home**: set temp orb, jets/light/soak buttons, and banners:
+  - Auto: "Standby until 3:45 PM · 56m to 102°" with **Heat Now**.
+  - Soak: shown with **Cancel**.
+  - Manual: shown with **Resume**.
+  - Hold and spa reminders.
+- **Soak sheet**: temp, "As soon as possible" or a ready time, keep-hot hours, and a live `/api/plan`
+  preview (heater windows, peak use, cost vs. turning it up now).
+- **Stats**:
+  - Overview.
+  - Runtime: Next 36 Hours plan chart, When You Soak heatmap, last 48 h, 14 days, energy cost, heating
+    model + measured runs.
+  - Diagnostics.
+- **Maintenance**:
+  - Hold mode, with tasks.
+  - Filters.
+  - Water: FROG @ease logs chlorine by color zone, other systems in ppm.
+- **Settings**:
+  - General: temp range, Smart Standby, lowest smart temp, clock, location, equipment, security.
+  - Schedule: filter cycles, TOU.
+  - Energy: rates, power, tub volume.
+  - Spa info.
 
-### Schedule Session view
-- Date + time picker ("Ready at:")
-- Target temp input (defaults to current set temp)
-- Plan preview: shows computed heat windows, flags peak overlap
-- Save / Cancel
-
-### History view
-- Table: date, ambient, start temp, end temp, duration, computed rate
-- Simple canvas chart of rate vs ambient temp (helps validate the model)
-
-### Settings view
-- TOU peak start/end hours
-- Filter cycle 1: start hour, duration (minutes)
-- Filter cycle 2: start hour, duration, enable toggle
-- Backlight timeout (minutes; 0 = always on)
-- Lat/lon for weather
-- MQTT: broker host, port, topic prefix, username/password (off by default)
-- "Reconfigure WiFi" button (triggers WiFiManager reset)
+`tools/mock_spa.py` serves `data/` with a simulated spa (including a Python copy of the planner and
+smart modes) on :8090 for local testing.
 
 ---
 
@@ -305,7 +333,7 @@ POST /api/config     → save config (lat/lon, TOU hours, MQTT, backlight)
 
 **Phase 4 — Web app**: Dashboard (live state via WebSocket), Settings page, Time sync button.
 
-**Phase 5 — Smart features**: Open-Meteo fetch, heat model (baseline then regression), TOU scheduler, Schedule Session UI with plan preview, main-loop schedule executor.
+**Phase 5 — Smart features** (done): forecast fetch, learned thermal model, DP planner, soak/manual/Auto controller, usage learning — see Smart Heating above.
 
 **Phase 6 — Polish**: Heat history UI, MQTT, ArduinoOTA, `uploadfs` OTA.
 

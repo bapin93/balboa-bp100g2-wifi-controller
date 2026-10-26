@@ -258,6 +258,62 @@ bool Store::saveThermal(ThermalModel &model) {
   return true;
 }
 
+void Store::loadSmart(HeatController &controller) {
+  File file = data_->open(AppConfig::SmartPath, "r");
+  if (!file) {
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, file)) {
+    Serial.println("[store] smart parse failed");
+    return;
+  }
+  controller.fromJson(doc.as<JsonVariantConst>());
+}
+
+bool Store::saveSmart(HeatController &controller) {
+  File file = data_->open(AppConfig::SmartPath, "w");
+  if (!file) {
+    Serial.println("[store] smart open for write failed");
+    return false;
+  }
+  JsonDocument doc;
+  controller.toJson(doc.to<JsonObject>());
+  if (serializeJson(doc, file) == 0) {
+    return false;
+  }
+  controller.clearDirty();
+  return true;
+}
+
+void Store::loadUsage(UsageModel &usage) {
+  File file = data_->open(AppConfig::UsagePath, "r");
+  if (!file) {
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, file)) {
+    Serial.println("[store] usage parse failed");
+    return;
+  }
+  usage.fromJson(doc.as<JsonVariantConst>());
+}
+
+bool Store::saveUsage(UsageModel &usage) {
+  File file = data_->open(AppConfig::UsagePath, "w");
+  if (!file) {
+    Serial.println("[store] usage open for write failed");
+    return false;
+  }
+  JsonDocument doc;
+  usage.toJson(doc.to<JsonObject>());
+  if (serializeJson(doc, file) == 0) {
+    return false;
+  }
+  usage.clearDirty();
+  return true;
+}
+
 uint8_t Store::loadWifiFailedBoots() {
   Preferences prefs;
   if (!prefs.begin("wifi", true)) {

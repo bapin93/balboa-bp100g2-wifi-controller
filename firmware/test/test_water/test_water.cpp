@@ -28,6 +28,15 @@ void test_rejects_bad_readings_and_doses() {
   TEST_ASSERT_NOT_NULL(log.addReading(T0, NAN, NAN, NAN, NAN, ""));  // nothing read
   TEST_ASSERT_NOT_NULL(log.addReading(T0, NAN, 10.0f, NAN, NAN, ""));
   TEST_ASSERT_NOT_NULL(log.addReading(T0, -1.0f, NAN, NAN, NAN, ""));
+  TEST_ASSERT_NOT_NULL(log.addReading(T0, NAN, NAN, NAN, NAN, "", 4));
+  // A FROG strip read by color alone is a reading, and survives the save/load round trip.
+  WaterLog frog;
+  TEST_ASSERT_NULL(frog.addReading(T0, NAN, NAN, NAN, NAN, "", 2));
+  JsonDocument doc;
+  frog.toJson(doc.to<JsonObject>());
+  WaterLog loaded;
+  loaded.fromJson(doc.as<JsonVariantConst>());
+  TEST_ASSERT_EQUAL_UINT8(2, loaded.entries().back().sanitizerLevel);
   TEST_ASSERT_NOT_NULL(log.addDose(T0, "", 1, "oz", ""));
   TEST_ASSERT_NOT_NULL(log.addDose(T0, "pH Down", 0, "oz", ""));
   TEST_ASSERT_NOT_NULL(log.addDose(T0, "pH Down", 1, "", ""));

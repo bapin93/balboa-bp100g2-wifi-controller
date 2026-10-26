@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <vector>
 
+#include "scheduler/heat_planner.h"
+
 namespace {
 
 constexpr uint32_t ClockValidAfter = 1700000000;
@@ -148,21 +150,7 @@ float ThermalModel::coolingRate(float water, float outside) const {
 }
 
 float ThermalModel::hoursToHeat(float from, float to, float outside) const {
-  if (!(to > from)) {
-    return 0;
-  }
-  const float heater = heaterRate();
-  const float loss = lossCoeff();
-  const float air = isnan(outside) ? FallbackOutsideF : outside;
-  if (loss <= 0) {
-    return (to - from) / heater;
-  }
-  // Heating levels off where losses match the heater; solve the exponential approach to that level.
-  const float level = air + heater / loss;
-  if (to >= level) {
-    return INFINITY;
-  }
-  return logf((level - from) / (level - to)) / loss;
+  return hoursToReach(from, to, heaterRate(), lossCoeff(), outside);
 }
 
 void ThermalModel::load(const std::deque<ThermalObservation> &heat, const std::deque<ThermalObservation> &cool) {

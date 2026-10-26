@@ -6,7 +6,9 @@
 
 #include <vector>
 
+#include "scheduler/heat_controller.h"
 #include "scheduler/thermal_model.h"
+#include "scheduler/usage_model.h"
 #include "storage/config_model.h"
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
@@ -29,6 +31,10 @@ class Store {
   bool saveWater(WaterLog &log);
   void loadThermal(ThermalModel &model);
   bool saveThermal(ThermalModel &model);
+  void loadSmart(HeatController &controller);
+  bool saveSmart(HeatController &controller);
+  void loadUsage(UsageModel &usage);
+  bool saveUsage(UsageModel &usage);
   // Boots in a row that never joined WiFi; enough of them reopens the setup portal.
   uint8_t loadWifiFailedBoots();
   void saveWifiFailedBoots(uint8_t count);
