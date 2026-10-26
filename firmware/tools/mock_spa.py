@@ -85,7 +85,8 @@ class MockSpa:
             "tou": {"peakStart": 17, "peakEnd": 21, "weekendsOffPeak": True, "holidays": "federal10",
                     "rates": {"summerStartMonth": 6, "summerEndMonth": 9, "summerPeak": 0.21277,
                               "summerOffPeak": 0.07884, "winterPeak": 0.18331, "winterOffPeak": 0.06792}},
-            "power": {"heaterKw": 5.5, "pump1LowKw": 0.5, "pump1HighKw": 1.8, "pump2Kw": 1.5, "standbyW": 30},
+            "power": {"heaterKw": 5.5, "pump1LowKw": 0.5, "pump1HighKw": 1.8, "pump2Kw": 1.5, "standbyW": 30,
+                      "tubGallons": 200},
         }
         self.water_unknown = False  # like a real spa between pump runs: true temp simulated, not reported
         self.last_water = None      # last reported reading and when, as the firmware keeps it
@@ -685,6 +686,27 @@ class MockSpa:
             whole = lambda item: {k: v if k in ("waterTemp", "setTemp") else round(v) for k, v in item.items()}
             return {"days": [whole(day) for day in self.runtime], "hours": [whole(hour) for hour in self.hours]}
 
+    def thermal_json(self):
+        """Mirrors /api/thermal: a few measured heats (still an estimate) and enough cool-downs to be learned."""
+        with self.lock:
+            now = int(time.time())
+            power = self.config["power"]
+            seed = power["heaterKw"] * 3412.14 / (power["tubGallons"] * 8.34)
+            heat = [{"t": now - d * 86400 - 3600, "v": v, "a": 96, "b": 102, "o": 41 + d, "m": 62}
+                    for d, v in ((1, 6.1), (3, 5.8))]
+            cool = [{"t": now - d * 43200, "v": v, "a": 102, "b": 98, "o": 38 + d, "m": 400}
+                    for d, v in enumerate((0.011, 0.013, 0.012, 0.014, 0.010, 0.012), start=1)]
+            heater = (seed + sum(r["v"] for r in heat)) / (len(heat) + 1)
+            loss = sorted(r["v"] for r in cool)[len(cool) // 2 - 1: len(cool) // 2 + 1]
+            top = now - now % 3600
+            hours = [{"t": t, "temp": round(self._outside_at(t), 1)} for t in range(top - 6 * 3600, top + 36 * 3600, 3600)]
+            return {
+                "model": {"heaterRate": heater, "heaterRateSeed": seed, "lossCoeff": sum(loss) / 2, "lossCoeffSeed": 0.012},
+                "runs": {"heat": heat, "cool": cool},
+                "weather": {"hasLocation": bool(self.config.get("location")), "fetchedAt": now - 900,
+                            "now": round(self._outside_at(now), 1), "hours": hours},
+            }
+
     def config_json(self):
         with self.lock:
             return {"type": "config", "data": {**self.config, "filterCycles": dict(self.filters)}}
@@ -764,6 +786,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/faults": lambda: {"reading": False, "seq": self.spa.fault_seq,
                                     "total": len(self.spa.faults), "entries": self.spa.faults},
             "/api/runtime": lambda: self.spa.runtime_json(),
+            "/api/thermal": lambda: self.spa.thermal_json(),
             "/api/maintenance": lambda: self.spa.maintenance_json(),
             "/api/water": lambda: self.spa.water_json(),
             "/api/debug-log": None,

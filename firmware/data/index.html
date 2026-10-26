@@ -170,6 +170,24 @@
           <div class="card-form" id="costCard"></div>
           <p class="form-hint" id="costHint"></p>
 
+          <p class="settings-section-title">Heating Model</p>
+          <div class="card-form" id="thermalCard"></div>
+          <p class="form-hint" id="thermalHint"></p>
+
+          <details class="disclosure">
+            <summary>
+              <span>Measured Runs</span>
+              <span class="disclosure-meta" id="thermalRunsMeta">None yet</span>
+            </summary>
+            <div class="disclosure-body table-body">
+              <table class="data-table" id="thermalTable">
+                <thead><tr><th>When</th><th>Run</th><th>Water</th><th>Time</th><th>Out</th><th>Rate</th></tr></thead>
+                <tbody></tbody>
+              </table>
+              <p class="form-hint">Heat rates are what the heater adds before heat loss, in °F/hr. Cool rates are how fast the water would drop at 100°F with 40°F outside. Times are hours:minutes.</p>
+            </div>
+          </details>
+
           <details class="disclosure">
             <summary>
               <span>Daily Numbers</span>
@@ -498,8 +516,12 @@
                 <label class="form-row-label" for="powerStandbyW">Standby <span class="row-sub">W</span></label>
                 <input class="form-row-input" id="powerStandbyW" type="number" min="0" max="1000" step="1" inputmode="numeric" placeholder="30" />
               </div>
+              <div class="form-row">
+                <label class="form-row-label" for="powerTubGallons">Tub Volume <span class="row-sub">gal</span></label>
+                <input class="form-row-input" id="powerTubGallons" type="number" min="50" max="2000" step="1" inputmode="numeric" placeholder="200" />
+              </div>
             </div>
-            <p class="form-hint">From the labels: heater kW is printed on it; for a pump, amps × volts × 0.9 ÷ 1000 is a good estimate. Standby covers the control board and ozonator and is counted all day. Costs are estimates and show on Stats once rates are set.</p>
+            <p class="form-hint">From the labels: heater kW is printed on it; for a pump, amps × volts × 0.9 ÷ 1000 is a good estimate. Standby covers the control board and ozonator and is counted all day. Costs are estimates and show on Stats once rates are set. Tub volume only sets the starting guess for how fast it heats; the controller measures the real rate.</p>
           </div>
         </form>
 

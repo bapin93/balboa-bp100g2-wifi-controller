@@ -137,6 +137,7 @@ void test_tou_rates_and_power() {
   doc["tou"]["rates"]["summerPeak"] = 0.21277;
   doc["power"]["heaterKw"] = 5.5;
   doc["power"]["standbyW"] = 40;
+  doc["power"]["tubGallons"] = 250;
   TEST_ASSERT_TRUE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
   TEST_ASSERT_EQUAL(HolidaySet::Nerc, next.tou.holidays);
   TEST_ASSERT_FALSE(next.tou.weekendsOffPeak);
@@ -145,6 +146,7 @@ void test_tou_rates_and_power() {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, next.rates.winterPeak);
   TEST_ASSERT_EQUAL_FLOAT(5.5f, next.power.heaterKw);
   TEST_ASSERT_EQUAL_UINT16(40, next.power.standbyW);
+  TEST_ASSERT_EQUAL_UINT16(250, next.power.tubGallons);
 
   // Survives the save/load round trip.
   JsonDocument saved;
@@ -154,6 +156,11 @@ void test_tou_rates_and_power() {
   TEST_ASSERT_EQUAL(HolidaySet::Nerc, loaded.tou.holidays);
   TEST_ASSERT_EQUAL_FLOAT(0.21277f, loaded.rates.summerPeak);
   TEST_ASSERT_EQUAL_FLOAT(5.5f, loaded.power.heaterKw);
+  TEST_ASSERT_EQUAL_UINT16(250, loaded.power.tubGallons);
+
+  JsonDocument tiny;
+  tiny["power"]["tubGallons"] = 10;
+  TEST_ASSERT_FALSE(validateConfigJson(tiny.as<JsonVariantConst>(), current, next, &error));
 
   JsonDocument bad;
   bad["tou"]["peakStart"] = 24;

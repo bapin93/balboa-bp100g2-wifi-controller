@@ -6,6 +6,8 @@
 #include <functional>
 
 #include "balboa/spa.h"
+#include "network/weather_client.h"
+#include "scheduler/thermal_model.h"
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
 #include "storage/store.h"
@@ -14,7 +16,8 @@
 class WebServerHub {
  public:
   WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config, const RuntimeLog &runtime,
-               MaintenanceLog &maintenance, WaterLog &water);
+               MaintenanceLog &maintenance, WaterLog &water, const ThermalModel &thermal,
+               const WeatherClient &weather);
 
   void begin();
   void loop();
@@ -48,6 +51,8 @@ class WebServerHub {
   const RuntimeLog &runtime_;
   MaintenanceLog &maintenance_;
   WaterLog &water_;
+  const ThermalModel &thermal_;
+  const WeatherClient &weather_;
   uint32_t lastBroadcastMs_ = 0;
   bool stateBroadcastPending_ = false;
 };

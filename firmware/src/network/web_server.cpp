@@ -67,8 +67,16 @@ bool sameFilterCycles(const DeviceConfig &a, const DeviceConfig &b) {
 }  // namespace
 
 WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config,
-                           const RuntimeLog &runtime, MaintenanceLog &maintenance, WaterLog &water)
-    : spa_(spa), store_(store), config_(config), runtime_(runtime), maintenance_(maintenance), water_(water) {}
+                           const RuntimeLog &runtime, MaintenanceLog &maintenance, WaterLog &water,
+                           const ThermalModel &thermal, const WeatherClient &weather)
+    : spa_(spa),
+      store_(store),
+      config_(config),
+      runtime_(runtime),
+      maintenance_(maintenance),
+      water_(water),
+      thermal_(thermal),
+      weather_(weather) {}
 
 void WebServerHub::begin() {
   applyCapabilitiesToSpa();
@@ -199,6 +207,17 @@ void WebServerHub::setupRoutes() {
           item["setTemp"] = roundf(hour.setTempAvg * 10.0f) / 10.0f;
         }
       }
+    });
+  });
+  server_.on("/api/thermal", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) {
+      JsonObject model = out["model"].to<JsonObject>();
+      model["heaterRate"] = thermal_.heaterRate();
+      model["heaterRateSeed"] = thermal_.heaterRateSeed();
+      model["lossCoeff"] = thermal_.lossCoeff();
+      model["lossCoeffSeed"] = thermal_.lossCoeffSeed();
+      thermal_.toJson(out["runs"].to<JsonObject>());
+      weather_.writeJson(out["weather"].to<JsonObject>(), static_cast<uint32_t>(time(nullptr)));
     });
   });
   server_.on("/api/debug-log", HTTP_GET, [this](AsyncWebServerRequest *request) {

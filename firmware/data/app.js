@@ -906,10 +906,12 @@ function dayLabel(date) {
 }
 
 async function loadRuntime() {
-  const [message] = await Promise.all([
+  const [message, thermal] = await Promise.all([
     requestJson("/api/runtime"),
+    requestJson("/api/thermal").catch((error) => console.warn("[bp100g2] thermal failed", error)),
     loadWeather().catch((error) => console.warn("[bp100g2] weather failed", error)),
   ]);
+  state.thermal = thermal || null;
   state.runtimeDays = message.days || [];
   state.runtimeHours = message.hours || [];
   state.runtimeLoadedAt = Date.now();
@@ -949,10 +951,92 @@ function renderRuntime() {
   });
   $("#runtimeTable").classList.toggle("no-cost", !ratesSet());
   renderCostCard();
+  renderThermal();
   if ($("#statsRuntime").classList.contains("active") && $("#stats").classList.contains("active")) {
     renderHoursChart();
     renderDailyChart();
   }
+}
+
+// ── heating model (learned by the controller from the tub's own heating and cooling) ──
+
+const ThermalRunsToLearn = 5;  // matches the firmware: below this the starting estimate still counts
+const ThermalFallbackOutside = 50;
+
+// Same physics as the firmware: dT/dt = heater - loss * (water - outside).
+function thermalHoursToHeat(model, from, to, outside) {
+  if (!(to > from)) return 0;
+  const level = outside + model.heaterRate / model.lossCoeff;
+  if (to >= level) return Infinity;
+  return Math.log((level - from) / (level - to)) / model.lossCoeff;
+}
+
+function thermalLearnedText(count) {
+  if (count >= ThermalRunsToLearn) return "measured";
+  return count ? `estimate, ${count} of ${ThermalRunsToLearn} runs` : "estimate";
+}
+
+function renderThermal() {
+  const card = $("#thermalCard");
+  const body = $("#thermalTable tbody");
+  body.replaceChildren();
+  const thermal = state.thermal;
+  if (!thermal?.model) {
+    card.replaceChildren(maintRow("Needs a firmware update", "", "muted"));
+    $("#thermalHint").textContent = "";
+    $("#thermalRunsMeta").textContent = "None yet";
+    return;
+  }
+  const { model, runs = {}, weather = {} } = thermal;
+  const heatRuns = runs.heat || [];
+  const coolRuns = runs.cool || [];
+  const outside = weather.now;
+  const air = Number.isFinite(outside) ? outside : ThermalFallbackOutside;
+  const data = state.data || {};
+  const water = waterReading(data).temp;
+  const rows = [];
+  if (!weather.hasLocation) {
+    rows.push(maintRow("Outside", "Set a location in Settings", "due"));
+  } else if (Number.isFinite(outside)) {
+    rows.push(maintRow("Outside", `${Math.round(outside)}°F · forecast ${ageText(weather.fetchedAt)}`));
+  } else {
+    rows.push(maintRow("Outside", weather.error || "Waiting for the forecast", "muted"));
+  }
+  if (Number.isFinite(water)) {
+    const loss = model.lossCoeff * (water - air);
+    rows.push(maintRow("Heats Now", `${(model.heaterRate - loss).toFixed(1)}°F/hr`));
+    rows.push(maintRow("Cools Now", `${loss.toFixed(1)}°F/hr with the heater off`));
+    if (Number.isFinite(data.setTemp) && data.setTemp > water) {
+      const hours = thermalHoursToHeat(model, water, data.setTemp, air);
+      rows.push(maintRow(`To ${Math.round(data.setTemp)}°F`, Number.isFinite(hours) ? `about ${hoursMinutes(hours * 3600)}` : "Heater can't keep up"));
+    }
+  }
+  rows.push(maintRow("Heater Adds", `${model.heaterRate.toFixed(1)}°F/hr · ${thermalLearnedText(heatRuns.length)}`));
+  rows.push(maintRow("Cools, 100° in 40° Air", `${(model.lossCoeff * 60).toFixed(1)}°F/hr · ${thermalLearnedText(coolRuns.length)}`));
+  card.replaceChildren(...rows);
+  $("#thermalHint").textContent = "Learned from the tub's own heating and cooling. Runs while the tub is in use are " +
+    "skipped, and cool-downs need a few quiet hours with the heater off. Until then the starting estimate comes from " +
+    "the heater kW and tub volume in Settings → Energy.";
+
+  const all = [...heatRuns.map((run) => ({ ...run, kind: "Heat" })), ...coolRuns.map((run) => ({ ...run, kind: "Cool" }))]
+    .sort((a, b) => b.t - a.t);
+  $("#thermalRunsMeta").textContent = all.length ? `${all.length} runs` : "None yet";
+  if (!all.length) {
+    const cell = body.insertRow().insertCell();
+    cell.colSpan = 6;
+    cell.className = "empty";
+    cell.textContent = "No runs measured yet";
+  }
+  all.forEach((run) => {
+    const row = body.insertRow();
+    const when = new Date(run.t * 1000);
+    const rate = run.kind === "Heat" ? run.v : run.v * 60;
+    [`${when.toLocaleDateString(undefined, { weekday: "short" })} ${when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`,
+     run.kind, `${Math.round(run.a)}→${Math.round(run.b)}`, hoursMinutesShort(run.m * 60),
+     Number.isFinite(run.o) ? Math.round(run.o) : "--", rate.toFixed(1)].forEach((text) => {
+      row.insertCell().textContent = text;
+    });
+  });
 }
 
 function infoRow(label, value) {
@@ -2309,7 +2393,8 @@ const MonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep
 const RateFields = { rateSummerPeak: "summerPeak", rateSummerOffPeak: "summerOffPeak",
   rateWinterPeak: "winterPeak", rateWinterOffPeak: "winterOffPeak" };
 const PowerFields = { powerHeaterKw: "heaterKw", powerPump1LowKw: "pump1LowKw", powerPump1HighKw: "pump1HighKw",
-  powerPump2Kw: "pump2Kw", powerStandbyW: "standbyW" };
+  powerPump2Kw: "pump2Kw", powerStandbyW: "standbyW", powerTubGallons: "tubGallons" };
+const WholeNumberPower = ["standbyW", "tubGallons"];
 
 function ratesSet() {
   const rates = state.config?.tou?.rates;
@@ -2446,7 +2531,7 @@ function setupEnergySettings() {
   });
   Object.entries(RateFields).forEach(([id, key]) => numberField(id, (value) => saveConfig({ tou: { rates: { [key]: value } } }, "Rate saved")));
   Object.entries(PowerFields).forEach(([id, key]) => numberField(id, (value) =>
-    saveConfig({ power: { [key]: key === "standbyW" ? Math.round(value) : value } }, "Power saved")));
+    saveConfig({ power: { [key]: WholeNumberPower.includes(key) ? Math.round(value) : value } }, "Power saved")));
 }
 
 // ── settings auto-save ──

@@ -26,6 +26,7 @@ struct PowerSpecs {
   float pump1HighKw = 1.8f;
   float pump2Kw = 1.5f;
   uint16_t standbyW = 30;  // control board, ozonator, etc.; counted all day
+  uint16_t tubGallons = 200;  // seeds how fast the heater warms the water until it has been measured
 };
 
 struct DeviceConfig {

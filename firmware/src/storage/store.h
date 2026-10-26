@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include "scheduler/thermal_model.h"
 #include "storage/config_model.h"
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
@@ -26,6 +27,8 @@ class Store {
   // Too big for NVS; lives with the other history on the userdata partition.
   void loadWater(WaterLog &log);
   bool saveWater(WaterLog &log);
+  void loadThermal(ThermalModel &model);
+  bool saveThermal(ThermalModel &model);
   // Boots in a row that never joined WiFi; enough of them reopens the setup portal.
   uint8_t loadWifiFailedBoots();
   void saveWifiFailedBoots(uint8_t count);

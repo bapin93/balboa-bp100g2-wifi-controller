@@ -112,14 +112,20 @@ bool validatePower(JsonVariantConst power, DeviceConfig &next, const char **erro
       !setFloatIfPresent(power, "pump2Kw", next.power.pump2Kw, 0, 20, KwError, error)) {
     return false;
   }
-  if (power["standbyW"].isNull()) {
-    return true;
+  if (!power["standbyW"].isNull()) {
+    if (!power["standbyW"].is<int>() || power["standbyW"].as<int>() < 0 || power["standbyW"].as<int>() > 1000) {
+      *error = "standby must be 0 to 1000 W";
+      return false;
+    }
+    next.power.standbyW = static_cast<uint16_t>(power["standbyW"].as<int>());
   }
-  if (!power["standbyW"].is<int>() || power["standbyW"].as<int>() < 0 || power["standbyW"].as<int>() > 1000) {
-    *error = "standby must be 0 to 1000 W";
-    return false;
+  if (!power["tubGallons"].isNull()) {
+    if (!power["tubGallons"].is<int>() || power["tubGallons"].as<int>() < 50 || power["tubGallons"].as<int>() > 2000) {
+      *error = "tub volume must be 50 to 2000 gallons";
+      return false;
+    }
+    next.power.tubGallons = static_cast<uint16_t>(power["tubGallons"].as<int>());
   }
-  next.power.standbyW = static_cast<uint16_t>(power["standbyW"].as<int>());
   return true;
 }
 
@@ -264,6 +270,7 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
   power["pump1HighKw"] = config.power.pump1HighKw;
   power["pump2Kw"] = config.power.pump2Kw;
   power["standbyW"] = config.power.standbyW;
+  power["tubGallons"] = config.power.tubGallons;
 }
 
 void configFromJson(JsonVariantConst input, DeviceConfig &config) {

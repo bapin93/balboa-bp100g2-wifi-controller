@@ -10,7 +10,9 @@
 
 #include "balboa/spa.h"
 #include "config.h"
+#include "network/weather_client.h"
 #include "network/web_server.h"
+#include "scheduler/thermal_model.h"
 #include "scheduler/tou.h"
 #include "storage/store.h"
 
@@ -32,6 +34,8 @@ WebServerHub *web = nullptr;
 RuntimeLog runtime;
 MaintenanceLog maintenance;
 WaterLog water;
+ThermalModel thermal;
+WeatherClient weather;
 uint32_t lastRuntimeTickMs = 0;
 uint32_t lastRuntimeSaveMs = 0;
 bool wifiConnected = false;
@@ -205,6 +209,27 @@ uint32_t localDate() {
   return static_cast<uint32_t>((local.tm_year + 1900) * 10000 + (local.tm_mon + 1) * 100 + local.tm_mday);
 }
 
+// Settings can change from the web app at any time; these setters only act on a change.
+void applyConfigToModels() {
+  weather.setLocation(deviceConfig.hasLocation, deviceConfig.latitude, deviceConfig.longitude);
+  thermal.setSeeds(deviceConfig.power.heaterKw, deviceConfig.power.tubGallons);
+}
+
+void learnThermal(const Balboa::SpaState &state, uint32_t epoch) {
+  applyConfigToModels();
+  ThermalSample sample;
+  sample.now = epoch;
+  sample.waterTemp = state.waterTemp;
+  sample.heating = state.heating;
+  // Filter cycles run pump 1 on low, so only high speed and the extras say someone is in.
+  sample.inUse = state.jet1Speed == 2 || (!deviceConfig.hideJet2 && state.jet2Speed > 0) || state.blower || state.light;
+  sample.outside = weather.outsideAt(epoch);
+  thermal.observe(sample);
+  if (thermal.dirty()) {
+    store.saveThermal(thermal);
+  }
+}
+
 void trackRuntime() {
   const uint32_t now = millis();
   const uint32_t elapsedSec = (now - lastRuntimeTickMs) / 1000;
@@ -222,6 +247,8 @@ void trackRuntime() {
     maintenance.addPumpTime(credited);
     water.addPumpTime(credited);  // FROG cartridges sit in the same flow
   }
+  const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
+  learnThermal(state, epoch);
   const uint32_t date = localDate();
   if (date == 0) {
     return;  // daily totals need the clock
@@ -234,7 +261,6 @@ void trackRuntime() {
   sample.filterRunning = state.activeFilterCycle != 0;
   sample.waterTemp = state.waterTemp;
   sample.setTemp = state.setTemp;
-  const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
   const bool newDay = runtime.add(date, epoch - epoch % 3600, credited, sample);
   if (newDay || now - lastRuntimeSaveMs >= AppConfig::RuntimeSaveIntervalMs) {
     store.saveRuntime(runtime);
@@ -274,6 +300,9 @@ void setup() {
     store.saveMaintenance(maintenance);
   }
   store.loadWater(water);
+  store.loadThermal(thermal);
+  applyConfigToModels();
+  weather.begin();
 
   Serial2.begin(AppConfig::SpaBaud, SERIAL_8N1, AppConfig::Rs485RxPin, AppConfig::Rs485TxPin);
   spa.begin(Serial2, AppConfig::Rs485TxEnablePin);
@@ -284,7 +313,7 @@ void setup() {
   setupWifi();
   setupTime();
 
-  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance, water);
+  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance, water, thermal, weather);
   web->begin();
 
   // A loop() stuck for 5 s panics and reboots, saving a crash report to the coredump partition.

@@ -230,6 +230,34 @@ bool Store::saveWater(WaterLog &log) {
   return true;
 }
 
+void Store::loadThermal(ThermalModel &model) {
+  File file = data_->open(AppConfig::ThermalPath, "r");
+  if (!file) {
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, file)) {
+    Serial.println("[store] thermal parse failed");
+    return;
+  }
+  model.fromJson(doc.as<JsonVariantConst>());
+}
+
+bool Store::saveThermal(ThermalModel &model) {
+  File file = data_->open(AppConfig::ThermalPath, "w");
+  if (!file) {
+    Serial.println("[store] thermal open for write failed");
+    return false;
+  }
+  JsonDocument doc;
+  model.toJson(doc.to<JsonObject>());
+  if (serializeJson(doc, file) == 0) {
+    return false;
+  }
+  model.clearDirty();
+  return true;
+}
+
 uint8_t Store::loadWifiFailedBoots() {
   Preferences prefs;
   if (!prefs.begin("wifi", true)) {
