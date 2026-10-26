@@ -12,21 +12,30 @@
 namespace Balboa {
 namespace {
 
-constexpr uint8_t ButtonJet1 = 0x04;
-constexpr uint8_t ButtonJet2 = 0x05;
-constexpr uint8_t ToggleLight1 = 0x11;
 constexpr size_t DebugLogMaxLines = 160;
 constexpr size_t StatusCaptureMaxLines = 500;
+constexpr uint32_t StateFreshMs = 5000;
+constexpr uint32_t PumpSettleMs = 1500;  // several status frames after a press
+constexpr uint8_t PumpMaxPresses = 4;
+constexpr uint8_t PumpMaxIgnoredPresses = 2;
+constexpr uint32_t FaultLogResponseTimeoutMs = 2000;
+constexpr uint8_t FaultLogMaxRetries = 2;
+constexpr size_t FaultLogMaxEntries = 24;
 
 bool isFiniteTemp(float value) {
   return !isnan(value) && value > 30.0f && value < 120.0f;
 }
 
-float decodeTemp(uint8_t raw) {
-  if (raw == 0xff || raw == 0x00) {
-    return NAN;
+const char *speedName(uint8_t speed) {
+  switch (speed) {
+    case 0:
+      return "Off";
+    case 1:
+      return "Low";
+    case 2:
+      return "High";
   }
-  return static_cast<float>(raw);
+  return "?";
 }
 
 bool shouldLogStatus(const SpaState &state) {
@@ -99,6 +108,14 @@ void SpaController::enableBenchMode() {
   state_.filterCycle2DurMinute = 0;
   state_.lastUpdateMs = millis();
   state_.valid = true;
+  DeviceConfiguration equipment;
+  equipment.pumpSpeeds[0] = 2;
+  equipment.light1 = true;
+  equipment_ = equipment;
+  capabilities_.detected = true;
+  capabilities_.pump1Speeds = 2;
+  capabilities_.pump2Speeds = 0;
+  capabilities_.light = true;
   stateChanged_ = true;
   Serial.println("[bench] simulated spa state enabled");
 }
@@ -110,6 +127,16 @@ void SpaController::loop() {
   }
   processRx();
   processTx();
+  processPumpCommand();
+  processFaultLogRead();
+}
+
+bool SpaController::hasFreshState() const {
+  return state_.valid && millis() - state_.lastUpdateMs <= StateFreshMs;
+}
+
+void SpaController::setUserCapabilities(bool setTime) {
+  capabilities_.setTime = setTime;
 }
 
 bool SpaController::consumeStateChanged() {
@@ -160,7 +187,15 @@ void SpaController::writeStateJson(JsonObject out) const {
   out["heatPending"] = state_.heatPending;
   out["priming"] = state_.priming;
   out["tempRangeHigh"] = state_.tempRangeHigh;
+  out["hold"] = state_.hold;
+  out["holdMinutes"] = state_.holdMinutes;
+  out["reminder"] = state_.reminder;
   out["activeFilterCycle"] = state_.activeFilterCycle;
+  if (setupParams_) {
+    JsonObject range = out["setTempRange"].to<JsonObject>();
+    range["min"] = state_.tempRangeHigh ? setupParams_->highRangeMin : setupParams_->lowRangeMin;
+    range["max"] = state_.tempRangeHigh ? setupParams_->highRangeMax : setupParams_->lowRangeMax;
+  }
   JsonObject filters = out["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = state_.filterCycle1Start;
   filters["cycle1StartMinute"] = state_.filterCycle1StartMinute;
@@ -173,6 +208,16 @@ void SpaController::writeStateJson(JsonObject out) const {
   filters["cycle2DurationMinute"] = state_.filterCycle2DurMinute;
   filters["valid"] = state_.filterCyclesValid;
   filters["seq"] = filterCyclesSeq_;
+  JsonObject pump = out["pumpCommand"].to<JsonObject>();
+  pump["active"] = pumpCommand_.active;
+  pump["pump"] = pumpCommand_.pump;
+  pump["target"] = pumpCommand_.target;
+  pump["seq"] = pumpCommand_.seq;
+  pump["ok"] = pumpCommand_.ok;
+  pump["message"] = pumpCommand_.message;
+  out["spaInfoSeq"] = spaInfoSeq_;
+  out["faultLogSeq"] = faultLogRead_.seq;
+  out["faultLogReading"] = faultLogRead_.active;
   char timeBuffer[6];
   snprintf(timeBuffer, sizeof(timeBuffer), "%02u:%02u", state_.hour, state_.minute);
   out["spaTime"] = timeBuffer;
@@ -183,11 +228,71 @@ void SpaController::writeStateJson(JsonObject out) const {
 }
 
 void SpaController::writeCapabilitiesJson(JsonObject out) const {
-  out["jet1"] = capabilities_.jet1;
-  out["jet2"] = capabilities_.jet2;
+  out["detected"] = capabilities_.detected;
+  out["jet1"] = capabilities_.pump1Speeds > 0;
+  out["jet2"] = capabilities_.pump2Speeds > 0;
+  out["pump1Speeds"] = capabilities_.pump1Speeds;
+  out["pump2Speeds"] = capabilities_.pump2Speeds;
   out["light"] = capabilities_.light;
   out["setTime"] = capabilities_.setTime;
-  out["backlight"] = capabilities_.backlight;
+}
+
+void SpaController::writeSpaInfoJson(JsonObject out) const {
+  if (equipment_) {
+    JsonObject equipment = out["equipment"].to<JsonObject>();
+    JsonArray pumps = equipment["pumps"].to<JsonArray>();
+    for (uint8_t speeds : equipment_->pumpSpeeds) {
+      pumps.add(speeds);
+    }
+    equipment["light1"] = equipment_->light1;
+    equipment["light2"] = equipment_->light2;
+    equipment["blower"] = equipment_->blower;
+    equipment["circulationPump"] = equipment_->circulationPump;
+    equipment["aux1"] = equipment_->aux1;
+    equipment["aux2"] = equipment_->aux2;
+    equipment["mister"] = equipment_->mister;
+  }
+  if (systemInfo_) {
+    JsonObject system = out["system"].to<JsonObject>();
+    system["model"] = systemInfo_->model;
+    system["softwareVersion"] = systemInfo_->softwareVersion;
+    system["setupNumber"] = systemInfo_->setupNumber;
+    if (systemInfo_->heaterVoltage) {
+      system["heaterVoltage"] = systemInfo_->heaterVoltage;
+    }
+    char dip[17];
+    for (int i = 0; i < 16; ++i) {
+      dip[i] = (systemInfo_->dipSwitches >> i) & 0x01 ? '1' : '0';  // position 1 first
+    }
+    dip[16] = '\0';
+    system["dipSwitches"] = dip;
+  }
+  if (setupParams_) {
+    JsonObject ranges = out["tempRanges"].to<JsonObject>();
+    ranges["lowMin"] = setupParams_->lowRangeMin;
+    ranges["lowMax"] = setupParams_->lowRangeMax;
+    ranges["highMin"] = setupParams_->highRangeMin;
+    ranges["highMax"] = setupParams_->highRangeMax;
+  }
+  out["seq"] = spaInfoSeq_;
+}
+
+void SpaController::writeFaultLogJson(JsonObject out) const {
+  out["reading"] = faultLogRead_.active;
+  out["seq"] = faultLogRead_.seq;
+  out["total"] = faultLogRead_.total;
+  JsonArray entries = out["entries"].to<JsonArray>();
+  for (const FaultLogEntry &entry : faultLog_) {
+    JsonObject item = entries.add<JsonObject>();
+    item["entry"] = entry.entryNumber;
+    item["code"] = entry.code;
+    item["daysAgo"] = entry.daysAgo;
+    item["hour"] = entry.hour;
+    item["minute"] = entry.minute;
+    item["setTemp"] = entry.setTemp;
+    item["sensorA"] = entry.sensorA;
+    item["sensorB"] = entry.sensorB;
+  }
 }
 
 String SpaController::debugLogText() const {
@@ -300,8 +405,15 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
 
   if (strcmp(action, "setTemp") == 0) {
     const int value = command["value"] | -1;
-    if (value < 50 || value > 104) {
-      return {CommandStatus::InvalidValue, "set temperature must be 50-104 F"};
+    int minTemp = 50;
+    int maxTemp = 104;
+    if (setupParams_) {
+      minTemp = state_.tempRangeHigh ? setupParams_->highRangeMin : setupParams_->lowRangeMin;
+      maxTemp = state_.tempRangeHigh ? setupParams_->highRangeMax : setupParams_->lowRangeMax;
+    }
+    if (value < minTemp || value > maxTemp) {
+      snprintf(validationMessage_, sizeof(validationMessage_), "set temperature must be %d-%d F", minTemp, maxTemp);
+      return {CommandStatus::InvalidValue, validationMessage_};
     }
     Serial.printf("[balboa] direct target temp=%d\n", value);
     return enqueue("set_temp_direct", buildSetTemperatureCommand(static_cast<uint8_t>(value)));
@@ -317,12 +429,8 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     if (enabled && (startHour < 0 || startHour > 23 || durationHour < 0 || durationHour > 24)) {
       return {CommandStatus::InvalidValue, "filter hours must be in range"};
     }
-    if (enabled && (startMinute < 0 || startMinute > 45 || startMinute % 15 != 0 || durationMinute < 0 ||
-                    durationMinute > 45 || durationMinute % 15 != 0)) {
-      return {CommandStatus::InvalidValue, "filter minutes must be 0, 15, 30, or 45"};
-    }
-    if (!enabled && (startMinute < 0 || startMinute > 45 || startMinute % 15 != 0 || durationMinute < 0 ||
-                     durationMinute > 45 || durationMinute % 15 != 0)) {
+    if (startMinute < 0 || startMinute > 45 || startMinute % 15 != 0 || durationMinute < 0 ||
+        durationMinute > 45 || durationMinute % 15 != 0) {
       return {CommandStatus::InvalidValue, "filter minutes must be 0, 15, 30, or 45"};
     }
     // The set command writes both cycles, so the untouched one must come from the spa, not a stale cache.
@@ -371,18 +479,61 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     return enqueue("read_filter_cycles", buildFilterCyclesRequest());
   }
 
-  if (strcmp(action, "jet1") == 0) {
-    return capabilities_.jet1 ? enqueueButton("jet1", ButtonJet1)
-                              : CommandResult{CommandStatus::UnsupportedFeature, "jet1 unsupported"};
+  if (strcmp(action, "setPump") == 0) {
+    const int pump = command["pump"] | 0;
+    const int value = command["value"] | -1;
+    if (pump < 1 || pump > 2 || pumpSpeeds(pump) == 0) {
+      return {CommandStatus::UnsupportedFeature, "this spa does not have that pump"};
+    }
+    if (value < 0 || value > pumpSpeeds(pump)) {
+      return {CommandStatus::InvalidValue, pumpSpeeds(pump) == 1 ? "pump is on/off only" : "pump speed must be 0-2"};
+    }
+    return startPumpCommand(static_cast<uint8_t>(pump), static_cast<uint8_t>(value));
   }
-  if (strcmp(action, "jet2") == 0) {
-    return capabilities_.jet2 ? enqueueButton("jet2", ButtonJet2)
-                              : CommandResult{CommandStatus::UnsupportedFeature, "jet2 unsupported"};
+
+  if (strcmp(action, "togglePump") == 0) {
+    // One press, exactly like the panel's jet button: the spa moves the pump to its next speed.
+    const int pump = command["pump"] | 0;
+    if (pump < 1 || pump > 2 || pumpSpeeds(pump) == 0) {
+      return {CommandStatus::UnsupportedFeature, "this spa does not have that pump"};
+    }
+    if (pumpCommand_.active) {
+      return {CommandStatus::QueueFull, "a pump change is already in progress"};
+    }
+    return enqueueToggle("pump_toggle", static_cast<uint8_t>(TogglePump1 + pump - 1));
   }
+
   if (strcmp(action, "light") == 0) {
-    return capabilities_.light ? enqueue("light_toggle_item", buildToggleItemCommand(ToggleLight1))
-                               : CommandResult{CommandStatus::UnsupportedFeature, "light unsupported"};
+    if (!capabilities_.light) {
+      return {CommandStatus::UnsupportedFeature, "light unsupported"};
+    }
+    // With a value the light is set exactly; without one it toggles.
+    if (command["value"].is<bool>() && command["value"].as<bool>() == state_.light) {
+      return {CommandStatus::Accepted, state_.light ? "light already on" : "light already off"};
+    }
+    return enqueueToggle("light_toggle_item", ToggleLight1);
   }
+
+  if (strcmp(action, "hold") == 0) {
+    if (command["value"].is<bool>() && command["value"].as<bool>() == state_.hold) {
+      return {CommandStatus::Accepted, state_.hold ? "already in hold" : "not in hold"};
+    }
+    return enqueueToggle("hold_toggle", ToggleHold);
+  }
+
+  if (strcmp(action, "clearReminder") == 0) {
+    return enqueueToggle("clear_notification", ToggleClearNotification);
+  }
+
+  if (strcmp(action, "readFaultLog") == 0) {
+    return startFaultLogRead();
+  }
+
+  if (strcmp(action, "refreshSpaInfo") == 0) {
+    requestSpaInfo();
+    return {CommandStatus::Accepted, "spa info requested"};
+  }
+
   if (strcmp(action, "syncTime") == 0) {
     if (!capabilities_.setTime) {
       return {CommandStatus::UnsupportedFeature, "time sync unsupported"};
@@ -396,6 +547,178 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
   }
 
   return {CommandStatus::InvalidValue, "unknown command action"};
+}
+
+uint8_t SpaController::pumpSpeeds(uint8_t pump) const {
+  return pump == 1 ? capabilities_.pump1Speeds : pump == 2 ? capabilities_.pump2Speeds : 0;
+}
+
+uint8_t SpaController::pumpSpeed(uint8_t pump) const {
+  return pump == 1 ? state_.jet1Speed : state_.jet2Speed;
+}
+
+CommandResult SpaController::startPumpCommand(uint8_t pump, uint8_t target) {
+  if (pumpCommand_.active) {
+    return {CommandStatus::QueueFull, "a pump change is already in progress"};
+  }
+  if (!hasFreshState()) {
+    return {CommandStatus::SpaStateUnavailable, "no recent status from the spa"};
+  }
+  if (pumpSpeed(pump) == target) {
+    return {CommandStatus::Accepted, "pump already at that speed"};
+  }
+  pumpCommand_.active = true;
+  pumpCommand_.pump = pump;
+  pumpCommand_.target = target;
+  pumpCommand_.startSpeed = pumpSpeed(pump);
+  pumpCommand_.lastSpeed = pumpCommand_.startSpeed;
+  pumpCommand_.presses = 0;
+  pumpCommand_.ignoredPresses = 0;
+  pumpCommand_.pressQueued = false;
+  pumpCommand_.message[0] = '\0';
+  stateChanged_ = true;
+  logDebug("[balboa] pump%u target=%s from=%s", pump, speedName(target), speedName(pumpCommand_.startSpeed));
+  return {CommandStatus::Accepted, "pump change started"};
+}
+
+void SpaController::finishPumpCommand(bool ok, const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  vsnprintf(pumpCommand_.message, sizeof(pumpCommand_.message), format, args);
+  va_end(args);
+  pumpCommand_.active = false;
+  pumpCommand_.ok = ok;
+  ++pumpCommand_.seq;
+  stateChanged_ = true;
+  logDebug("[balboa] pump%u %s: %s", pumpCommand_.pump, ok ? "done" : "failed", pumpCommand_.message);
+}
+
+void SpaController::processPumpCommand() {
+  PumpCommand &cmd = pumpCommand_;
+  if (!cmd.active || cmd.pressQueued) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (cmd.presses > 0 && (now - cmd.pressSentMs < PumpSettleMs || state_.lastUpdateMs <= cmd.pressSentMs)) {
+    return;
+  }
+
+  const uint8_t current = pumpSpeed(cmd.pump);
+  if (current == cmd.target) {
+    finishPumpCommand(true, "Jet %u set to %s", cmd.pump, speedName(cmd.target));
+    return;
+  }
+  if (cmd.presses > 0) {
+    if (current == cmd.lastSpeed) {
+      // The spa ignored the press; it may have been dropped on the bus.
+      if (++cmd.ignoredPresses > PumpMaxIgnoredPresses) {
+        finishPumpCommand(false, "The spa did not respond to Jet %u", cmd.pump);
+        return;
+      }
+    } else if (current == cmd.startSpeed) {
+      // A full cycle without reaching the target: the spa is holding the pump at certain speeds.
+      finishPumpCommand(false, "The spa won't set Jet %u to %s right now (it runs pump 1 for heating and filtering)",
+                        cmd.pump, speedName(cmd.target));
+      return;
+    }
+    cmd.lastSpeed = current;
+  }
+  if (cmd.presses >= PumpMaxPresses) {
+    finishPumpCommand(false, "Jet %u stopped at %s", cmd.pump, speedName(current));
+    return;
+  }
+  CommandResult result = enqueueToggle("pump_press", static_cast<uint8_t>(TogglePump1 + cmd.pump - 1), 300);
+  if (result.status != CommandStatus::Accepted) {
+    finishPumpCommand(false, "Command queue is full");
+    return;
+  }
+  cmd.pressQueued = true;
+  ++cmd.presses;
+}
+
+CommandResult SpaController::startFaultLogRead() {
+  if (faultLogRead_.active) {
+    return {CommandStatus::Accepted, "fault log read already in progress"};
+  }
+  faultLog_.clear();
+  faultLogRead_.active = true;
+  faultLogRead_.awaiting = false;
+  faultLogRead_.next = FaultLogLatestEntry;
+  faultLogRead_.total = 0;
+  faultLogRead_.retries = 0;
+  stateChanged_ = true;
+  return {CommandStatus::Accepted, "reading fault log"};
+}
+
+void SpaController::processFaultLogRead() {
+  FaultLogRead &read = faultLogRead_;
+  if (!read.active) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (read.awaiting) {
+    if (now - read.requestMs < FaultLogResponseTimeoutMs) {
+      return;
+    }
+    read.awaiting = false;
+    if (++read.retries > FaultLogMaxRetries) {
+      logDebug("[balboa] fault log entry %u timed out, skipping", read.next);
+      read.retries = 0;
+      if (read.next == FaultLogLatestEntry) {
+        read.active = false;  // the spa never answered
+        ++read.seq;
+        stateChanged_ = true;
+        return;
+      }
+      ++read.next;
+    }
+  }
+  if (read.next != FaultLogLatestEntry && read.next >= read.total) {
+    if (read.total == 0) {
+      faultLog_.clear();  // an empty log still answers the "latest" request with a placeholder
+    }
+    read.active = false;
+    ++read.seq;
+    stateChanged_ = true;
+    logDebug("[balboa] fault log read complete entries=%u", static_cast<unsigned>(faultLog_.size()));
+    return;
+  }
+  if (enqueue("read_fault_log", buildSettingsRequest(SettingsFaultLog, read.next)).status == CommandStatus::Accepted) {
+    read.awaiting = true;
+    read.requestMs = now;
+  }
+}
+
+void SpaController::applyFaultLogEntry(const FaultLogEntry &entry) {
+  FaultLogRead &read = faultLogRead_;
+  bool replaced = false;
+  for (FaultLogEntry &existing : faultLog_) {
+    if (existing.entryNumber == entry.entryNumber) {
+      existing = entry;
+      replaced = true;
+      break;
+    }
+  }
+  if (!replaced && faultLog_.size() < FaultLogMaxEntries) {
+    faultLog_.push_back(entry);
+  }
+  if (!read.active || !read.awaiting) {
+    return;
+  }
+  read.awaiting = false;
+  read.retries = 0;
+  if (read.next == FaultLogLatestEntry) {
+    read.total = entry.totalEntries > FaultLogMaxEntries ? FaultLogMaxEntries : entry.totalEntries;
+    read.next = 0;
+  } else {
+    ++read.next;
+  }
+}
+
+void SpaController::requestSpaInfo() {
+  enqueue("read_configuration", buildSettingsRequest(SettingsConfiguration, 0x00, 0x01));
+  enqueue("read_information", buildSettingsRequest(SettingsInformation));
+  enqueue("read_setup_parameters", buildSettingsRequest(SettingsSetupParameters));
 }
 
 void SpaController::updateBenchState() {
@@ -435,25 +758,45 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     Serial.printf("[bench] setTemp=%d\n", value);
     return {CommandStatus::Accepted, "bench set temperature updated"};
   }
-  if (strcmp(action, "jet1") == 0) {
+  if (strcmp(action, "setPump") == 0) {
+    const int value = command["value"] | -1;
+    if ((command["pump"] | 0) != 1 || value < 0 || value > 2) {
+      return {CommandStatus::InvalidValue, "bench has one two-speed pump"};
+    }
+    state_.jet1Speed = static_cast<uint8_t>(value);
+    state_.jet1 = value != 0;
+    ++pumpCommand_.seq;
+    pumpCommand_.ok = true;
+    snprintf(pumpCommand_.message, sizeof(pumpCommand_.message), "Jet 1 set to %s", speedName(state_.jet1Speed));
+    stateChanged_ = true;
+    Serial.printf("[bench] jet1 speed=%u\n", state_.jet1Speed);
+    return {CommandStatus::Accepted, "bench pump updated"};
+  }
+  if (strcmp(action, "togglePump") == 0) {
+    if ((command["pump"] | 0) != 1) {
+      return {CommandStatus::UnsupportedFeature, "bench has one two-speed pump"};
+    }
     state_.jet1Speed = (state_.jet1Speed + 1) % 3;
     state_.jet1 = state_.jet1Speed != 0;
     stateChanged_ = true;
-    Serial.printf("[bench] jet1 speed=%u\n", state_.jet1Speed);
-    return {CommandStatus::Accepted, "bench jet1 toggled"};
-  }
-  if (strcmp(action, "jet2") == 0) {
-    state_.jet2Speed = state_.jet2 ? 0 : 1;
-    state_.jet2 = state_.jet2Speed != 0;
-    stateChanged_ = true;
-    Serial.printf("[bench] jet2 speed=%u\n", state_.jet2Speed);
-    return {CommandStatus::Accepted, "bench jet2 toggled"};
+    return {CommandStatus::Accepted, "command accepted"};
   }
   if (strcmp(action, "light") == 0) {
-    state_.light = !state_.light;
+    state_.light = command["value"].is<bool>() ? command["value"].as<bool>() : !state_.light;
     stateChanged_ = true;
     Serial.printf("[bench] light=%s\n", state_.light ? "on" : "off");
-    return {CommandStatus::Accepted, "bench light toggled"};
+    return {CommandStatus::Accepted, "bench light updated"};
+  }
+  if (strcmp(action, "hold") == 0) {
+    state_.hold = command["value"].is<bool>() ? command["value"].as<bool>() : !state_.hold;
+    state_.holdMinutes = state_.hold ? 60 : 0;
+    stateChanged_ = true;
+    return {CommandStatus::Accepted, "bench hold updated"};
+  }
+  if (strcmp(action, "clearReminder") == 0) {
+    state_.reminder = 0;
+    stateChanged_ = true;
+    return {CommandStatus::Accepted, "bench command accepted"};
   }
   if (strcmp(action, "syncTime") == 0) {
     time_t now = time(nullptr);
@@ -504,6 +847,12 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
                   state_.filterCycle2DurMinute);
     return {CommandStatus::Accepted, "bench filter 2 updated"};
   }
+  if (strcmp(action, "readFaultLog") == 0 || strcmp(action, "refreshSpaInfo") == 0) {
+    ++faultLogRead_.seq;
+    ++spaInfoSeq_;
+    stateChanged_ = true;
+    return {CommandStatus::Accepted, "bench has no fault log"};
+  }
   return {CommandStatus::InvalidValue, "unknown command action"};
 }
 
@@ -524,9 +873,9 @@ void SpaController::processRx() {
       const bool isStatusFrame = parsed->frame->type == MessageStatusUpdate;
       const bool isPollFrame = parsed->frame->type == 0x06 && parsed->frame->payload.empty();
       const bool isDiscoveryFrame = parsed->frame->type == 0x00 && parsed->frame->payload.empty();
-      const bool isIdlePanelFrame = parsed->frame->type == MessagePanelCommand && parsed->frame->payload.size() == 2 &&
+      const bool isIdlePanelFrame = parsed->frame->type == MessageToggleItem && parsed->frame->payload.size() == 2 &&
                                     parsed->frame->payload[0] == 0x00 && parsed->frame->payload[1] == 0x00;
-      if (parsed->frame->type == MessagePanelCommand && !isIdlePanelFrame) {
+      if (parsed->frame->type == MessageToggleItem && !isIdlePanelFrame) {
         Serial.printf("[balboa] panel cmd t=%lu src=%02x dst=%02x payload=%s wire=%s\n",
                       static_cast<unsigned long>(millis()), parsed->frame->source, parsed->frame->target,
                       bytesToHex(parsed->frame->payload).c_str(),
@@ -549,28 +898,15 @@ void SpaController::processRx() {
       handleFrame(*parsed->frame);
       // Guarded here because the hex-string arguments allocate even when capture is off.
       if (isStatusFrame && statusCaptureActive_) {
-        const uint8_t p0 = parsed->frame->payload.size() > 0 ? parsed->frame->payload[0] : 0;
-        const uint8_t p1 = parsed->frame->payload.size() > 1 ? parsed->frame->payload[1] : 0;
-        const uint8_t p7 = parsed->frame->payload.size() > 7 ? parsed->frame->payload[7] : 0;
-        const uint8_t p8 = parsed->frame->payload.size() > 8 ? parsed->frame->payload[8] : 0;
-        const uint8_t p9 = parsed->frame->payload.size() > 9 ? parsed->frame->payload[9] : 0;
-        logStatusCapture("status raw=%s payload=%s menu=%02x/%02x selector=%02x edit=%02u:%02u water=%.0f set=%.0f time=%02u:%02u heatMode=%u heating=%u heatPending=%u jets=%u/%u jetSpeed=%u/%u light=%u",
+        logStatusCapture("status raw=%s payload=%s water=%.0f set=%.0f time=%02u:%02u heatMode=%u heating=%u heatPending=%u hold=%u reminder=%02x jetSpeed=%u/%u light=%u",
                          bytesToHex(encodeFrame(*parsed->frame)).c_str(),
                          bytesToHex(parsed->frame->payload).c_str(),
-                         p0, p1, p9, p7, p8, state_.waterTemp, state_.setTemp,
-                         state_.hour, state_.minute, state_.heatMode, state_.heating ? 1 : 0,
-                         state_.heatPending ? 1 : 0,
-                         state_.jet1 ? 1 : 0, state_.jet2 ? 1 : 0,
+                         state_.waterTemp, state_.setTemp, state_.hour, state_.minute, state_.heatMode,
+                         state_.heating ? 1 : 0, state_.heatPending ? 1 : 0, state_.hold ? 1 : 0, state_.reminder,
                          state_.jet1Speed, state_.jet2Speed, state_.light ? 1 : 0);
       }
       if (isStatusFrame && rawStatusCaptureCount_ > 0) {
         Serial.printf("[balboa] status raw=%s\n", bytesToHex(encodeFrame(*parsed->frame)).c_str());
-        if (parsed->frame->payload.size() > 8) {
-          Serial.printf("[balboa] edit value hour=%u minute=%u menu=%02x/%02x selector=%02x\n",
-                        parsed->frame->payload[7], parsed->frame->payload[8],
-                        parsed->frame->payload[0], parsed->frame->payload[1],
-                        parsed->frame->payload[9]);
-        }
         --rawStatusCaptureCount_;
       }
       if (isStatusFrame && state_.valid && shouldLogStatus(state_)) {
@@ -608,54 +944,97 @@ void SpaController::processTx() {
   Serial.printf("[balboa] tx %s %s\n", command.label.c_str(), bytesToHex(command.frame).c_str());
   transmit(command.frame);
   Serial.println("[balboa] tx complete");
+  if (command.label == "pump_press") {
+    pumpCommand_.pressQueued = false;
+    pumpCommand_.pressSentMs = now;
+  }
   lastTxMs_ = now;
 }
 
 void SpaController::handleFrame(const Frame &frame) {
-  if (frame.type == MessageStatusUpdate && decodeStatusFrame(frame)) {
-    if (!state_.valid && !state_.filterCyclesValid) {
-      enqueue("read_filter_cycles_boot", buildFilterCyclesRequest());
-    }
-    state_.lastUpdateMs = millis();
-    state_.valid = true;
-    stateChanged_ = true;
-  } else if (frame.type == MessageFilterCyclesResponse && decodeFilterCyclesResponse(frame)) {
-    publishFilterCyclesRead();
+  switch (frame.type) {
+    case MessageStatusUpdate:
+      if (const auto status = decodeStatusUpdate(frame.payload)) {
+        if (!state_.valid && !state_.filterCyclesValid) {
+          enqueue("read_filter_cycles_boot", buildFilterCyclesRequest());
+          requestSpaInfo();
+        }
+        applyStatus(*status);
+      }
+      break;
+    case MessageFilterCyclesResponse:
+      if (decodeFilterCyclesResponse(frame)) {
+        publishFilterCyclesRead();
+      }
+      break;
+    case MessageConfigurationResponse:
+      if (const auto equipment = decodeDeviceConfiguration(frame.payload)) {
+        equipment_ = equipment;
+        capabilities_.detected = true;
+        capabilities_.pump1Speeds = equipment->pumpSpeeds[0];
+        capabilities_.pump2Speeds = equipment->pumpSpeeds[1];
+        capabilities_.light = equipment->light1;
+        ++spaInfoSeq_;
+        stateChanged_ = true;
+        logDebug("[balboa] equipment pumps=%u/%u/%u/%u/%u/%u light1=%u light2=%u blower=%u circ=%u",
+                 equipment->pumpSpeeds[0], equipment->pumpSpeeds[1], equipment->pumpSpeeds[2],
+                 equipment->pumpSpeeds[3], equipment->pumpSpeeds[4], equipment->pumpSpeeds[5],
+                 equipment->light1, equipment->light2, equipment->blower, equipment->circulationPump);
+      }
+      break;
+    case MessageInformationResponse:
+      if (const auto info = decodeSystemInformation(frame.payload)) {
+        systemInfo_ = info;
+        ++spaInfoSeq_;
+        stateChanged_ = true;
+        logDebug("[balboa] system model=%s software=%s", info->model.c_str(), info->softwareVersion.c_str());
+      }
+      break;
+    case MessageSetupParametersResponse:
+      if (const auto params = decodeSetupParameters(frame.payload)) {
+        setupParams_ = params;
+        ++spaInfoSeq_;
+        stateChanged_ = true;
+        logDebug("[balboa] temp ranges low=%u-%u high=%u-%u", params->lowRangeMin, params->lowRangeMax,
+                 params->highRangeMin, params->highRangeMax);
+      }
+      break;
+    case MessageFaultLogResponse:
+      if (const auto entry = decodeFaultLogEntry(frame.payload)) {
+        applyFaultLogEntry(*entry);
+        stateChanged_ = true;
+      }
+      break;
   }
 }
 
-bool SpaController::decodeStatusFrame(const Frame &frame) {
-  if (frame.payload.size() <= 20) {
-    return false;
-  }
-
-  // Offsets follow the BWA status layout (github.com/ccutrer/balboa_worldwide_app/wiki, pybalboa).
-  state_.hour = frame.payload[3] & 0x1f;
-  state_.minute = frame.payload[4] & 0x3f;
-  const uint8_t heatMode = frame.payload[5] & 0x03;
-  state_.heatMode = heatMode == 3 ? 2 : heatMode;  // packs report ready-in-rest as 2 or 3
-  state_.tempRangeHigh = (frame.payload[10] & 0x04) != 0;
-  state_.priming = frame.payload[1] == 0x01;
-  state_.waterTemp = decodeTemp(frame.payload[2]);
-  state_.setTemp = decodeTemp(frame.payload[20]);
-  state_.heating = (frame.payload[10] & 0x10) != 0;
-  state_.heatPending = !state_.heating && (frame.payload[10] & 0x20) != 0;
-  state_.jet1Speed = frame.payload[11] & 0x03;
+void SpaController::applyStatus(const StatusUpdate &status) {
+  state_.hour = status.hour;
+  state_.minute = status.minute;
+  state_.heatMode = status.heatMode;
+  state_.tempRangeHigh = status.tempRangeHigh;
+  state_.priming = status.initMode == 0x01;
+  state_.waterTemp = status.waterTemp;
+  state_.setTemp = status.setTemp;
+  state_.heating = status.heating;
+  state_.heatPending = status.heatWaiting;
+  state_.jet1Speed = status.pumpSpeed[0];
   state_.jet1 = state_.jet1Speed != 0;
-  state_.jet2Speed = 0;
-  state_.jet2 = false;
-  state_.light = frame.payload[14] != 0;
-  menuMajor_ = frame.payload[0];
-  menuMinor_ = frame.payload[1];
-  filterMenuSelector_ = frame.payload[9];
-  if (menuMajor_ == 0x00 && menuMinor_ == 0x00 && filterMenuSelector_ == 0x04) {
-    state_.activeFilterCycle = 1;
-  } else if (menuMajor_ == 0x00 && menuMinor_ == 0x00 && filterMenuSelector_ == 0x08) {
-    state_.activeFilterCycle = 2;
-  } else if (menuMajor_ == 0x00 && menuMinor_ == 0x00) {
-    state_.activeFilterCycle = 0;
+  state_.jet2Speed = status.pumpSpeed[1];
+  state_.jet2 = state_.jet2Speed != 0;
+  state_.blower = status.blower;
+  state_.circulationPump = status.circulationPump;
+  state_.light = status.light1;
+  state_.hold = status.inHold();
+  state_.holdMinutes = state_.hold ? status.holdMinutes : 0;
+  state_.reminder = status.reminder;
+  // Byte 9 doubles as a menu selector while the panel is in a menu, so only trust it at the main screen.
+  if (status.atMainScreen()) {
+    state_.activeFilterCycle = status.filter1Running ? 1 : status.filter2Running ? 2 : 0;
   }
-  return true;
+  state_.lastUpdateMs = millis();
+  state_.valid = true;
+  stateChanged_ = true;
 }
 
 bool SpaController::decodeFilterCyclesResponse(const Frame &frame) {
@@ -706,8 +1085,8 @@ CommandResult SpaController::enqueue(const char *label, std::vector<uint8_t> fra
   return {CommandStatus::Accepted, "command accepted"};
 }
 
-CommandResult SpaController::enqueueButton(const char *label, uint8_t buttonCode, uint32_t minDelayMs) {
-  return enqueue(label, buildPanelCommand(buttonCode), minDelayMs);
+CommandResult SpaController::enqueueToggle(const char *label, uint8_t itemCode, uint32_t minDelayMs) {
+  return enqueue(label, buildToggleItemCommand(itemCode), minDelayMs);
 }
 
 void SpaController::transmit(const std::vector<uint8_t> &frame) {

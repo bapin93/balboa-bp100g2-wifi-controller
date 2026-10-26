@@ -87,11 +87,7 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
 
   JsonVariantConst caps = input["capabilities"];
   if (caps.is<JsonObjectConst>()) {
-    setBoolIfPresent(caps, "jet1", next.jet1);
-    setBoolIfPresent(caps, "jet2", next.jet2);
-    setBoolIfPresent(caps, "light", next.light);
     setBoolIfPresent(caps, "setTime", next.setTime);
-    setBoolIfPresent(caps, "backlight", next.backlight);
   }
 
   JsonVariantConst filters = input["filterCycles"];
@@ -123,15 +119,6 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
     }
   }
 
-  if (input["backlightTimeout"].is<int>()) {
-    const int timeout = input["backlightTimeout"].as<int>();
-    if (timeout < 0 || timeout > 60) {
-      *error = "backlight timeout must be 0-60 minutes";
-      return false;
-    }
-    next.backlightTimeout = static_cast<uint8_t>(timeout);
-  }
-
   *error = nullptr;
   return true;
 }
@@ -140,14 +127,9 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
   out["timezone"] = config.timezone;
   out["authEnabled"] = config.authEnabled;
   out["authPasswordSet"] = strlen(config.authPassword) > 0;
-  out["backlightTimeout"] = config.backlightTimeout;
 
   JsonObject caps = out["capabilities"].to<JsonObject>();
-  caps["jet1"] = config.jet1;
-  caps["jet2"] = config.jet2;
-  caps["light"] = config.light;
   caps["setTime"] = config.setTime;
-  caps["backlight"] = config.backlight;
 
   JsonObject filters = out["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = config.filterCycle1Start;

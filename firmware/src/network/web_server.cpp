@@ -35,8 +35,9 @@ bool sameFilterCycles(const DeviceConfig &a, const DeviceConfig &b) {
 
 }  // namespace
 
-WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config)
-    : spa_(spa), store_(store), config_(config) {}
+WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config,
+                           const RuntimeLog &runtime, MaintenanceLog &maintenance)
+    : spa_(spa), store_(store), config_(config), runtime_(runtime), maintenance_(maintenance) {}
 
 void WebServerHub::begin() {
   applyCapabilitiesToSpa();
@@ -106,6 +107,25 @@ void WebServerHub::setupRoutes() {
   server_.on("/", HTTP_GET, [this](AsyncWebServerRequest *request) { sendIndex(request); });
   server_.on("/index.html", HTTP_GET, [this](AsyncWebServerRequest *request) { sendIndex(request); });
   server_.on("/api/state", HTTP_GET, [this](AsyncWebServerRequest *request) { sendState(request); });
+  server_.on("/api/spa-info", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) { spa_.writeSpaInfoJson(out); });
+  });
+  server_.on("/api/faults", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) { spa_.writeFaultLogJson(out); });
+  });
+  server_.on("/api/runtime", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) {
+      JsonArray days = out["days"].to<JsonArray>();
+      for (const RuntimeDay &day : runtime_.days()) {
+        JsonObject item = days.add<JsonObject>();
+        item["date"] = day.date;
+        item["heatingSec"] = day.heatingSec;
+        item["pumpLowSec"] = day.pumpLowSec;
+        item["pumpHighSec"] = day.pumpHighSec;
+        item["filterSec"] = day.filterSec;
+      }
+    });
+  });
   server_.on("/api/debug-log", HTTP_GET, [this](AsyncWebServerRequest *request) {
     if (!isAuthorized(request)) {
       return request->requestAuthentication();
@@ -139,6 +159,19 @@ void WebServerHub::setupRoutes() {
       [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
         if (index == 0 && len == total) {
           handleCommandBody(request, data, len);
+        }
+      });
+
+  server_.on("/api/maintenance", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) { writeMaintenanceJson(out); });
+  });
+  server_.on(
+      "/api/maintenance", HTTP_POST,
+      [](AsyncWebServerRequest *request) {},
+      nullptr,
+      [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        if (index == 0 && len == total) {
+          handleMaintenanceBody(request, data, len);
         }
       });
 
@@ -213,6 +246,72 @@ void WebServerHub::handleCommandBody(AsyncWebServerRequest *request, uint8_t *da
   sendCommandResult(request, result);
 }
 
+void WebServerHub::writeMaintenanceJson(JsonObject out) {
+  maintenance_.toJson(out);
+  out["now"] = static_cast<uint32_t>(time(nullptr));
+}
+
+void WebServerHub::handleMaintenanceBody(AsyncWebServerRequest *request, uint8_t *data, size_t len) {
+  if (!isAuthorized(request)) {
+    return request->requestAuthentication();
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len)) {
+    request->send(400, "application/json", "{\"status\":\"invalid_value\",\"message\":\"invalid json\"}");
+    return;
+  }
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  const char *error = nullptr;
+  if (now < 1700000000) {
+    error = "the controller clock isn't set yet";
+  }
+  // Actions take an optional date so a swap can be recorded after the fact; it can't be in the future.
+  const uint32_t ts = doc["ts"] | now;
+  if (!error && (ts < 1600000000 || ts > now + 600)) {
+    error = "date must not be in the future";
+  }
+  const char *action = doc["action"] | "";
+  const uint16_t id = doc["id"] | 0;
+  if (!error) {
+    if (strcmp(action, "add") == 0) {
+      error = maintenance_.addFilter(doc["name"] | "", ts);
+    } else if (strcmp(action, "rename") == 0) {
+      error = maintenance_.renameFilter(id, doc["name"] | "");
+    } else if (strcmp(action, "delete") == 0) {
+      error = maintenance_.deleteFilter(id, now);
+    } else if (strcmp(action, "install") == 0) {
+      error = maintenance_.install(id, ts);
+    } else if (strcmp(action, "remove") == 0) {
+      error = maintenance_.takeOut(id, ts);
+    } else if (strcmp(action, "swap") == 0) {
+      error = maintenance_.swap(doc["outId"] | 0, doc["inId"] | 0, ts);
+    } else if (strcmp(action, "clean") == 0) {
+      error = maintenance_.clean(id, ts);
+    } else if (strcmp(action, "addTask") == 0) {
+      error = maintenance_.addTask(doc["name"] | "", doc["intervalDays"] | 0, now);
+    } else if (strcmp(action, "editTask") == 0) {
+      error = maintenance_.editTask(id, doc["name"] | "", doc["intervalDays"] | 0);
+    } else if (strcmp(action, "deleteTask") == 0) {
+      error = maintenance_.deleteTask(id);
+    } else if (strcmp(action, "taskDone") == 0) {
+      error = maintenance_.completeTask(id, ts);
+    } else {
+      error = "unknown maintenance action";
+    }
+  }
+  if (error) {
+    JsonDocument out;
+    out["status"] = "invalid_value";
+    out["message"] = error;
+    String body;
+    serializeJson(out, body);
+    request->send(400, "application/json", body);
+    return;
+  }
+  store_.saveMaintenance(maintenance_);
+  sendJson(request, [this](JsonObject out) { writeMaintenanceJson(out); });
+}
+
 bool WebServerHub::isAuthorized(AsyncWebServerRequest *request) const {
   if (!config_.authEnabled || strlen(config_.authPassword) == 0) {
     return true;
@@ -225,6 +324,17 @@ void WebServerHub::sendState(AsyncWebServerRequest *request) {
     return request->requestAuthentication();
   }
   request->send(200, "application/json", stateJson());
+}
+
+void WebServerHub::sendJson(AsyncWebServerRequest *request, const std::function<void(JsonObject)> &fill) {
+  if (!isAuthorized(request)) {
+    return request->requestAuthentication();
+  }
+  JsonDocument doc;
+  fill(doc.to<JsonObject>());
+  String body;
+  serializeJson(doc, body);
+  request->send(200, "application/json", body);
 }
 
 void WebServerHub::sendConfig(AsyncWebServerRequest *request) {
@@ -287,13 +397,7 @@ void WebServerHub::persistFilterCyclesRead() {
 }
 
 void WebServerHub::applyCapabilitiesToSpa() {
-  Balboa::SpaCapabilities caps;
-  caps.jet1 = config_.jet1;
-  caps.jet2 = config_.jet2;
-  caps.light = config_.light;
-  caps.setTime = config_.setTime;
-  caps.backlight = config_.backlight;
-  spa_.setCapabilities(caps);
+  spa_.setUserCapabilities(config_.setTime);
 }
 
 // Seeds the display with the last known spa values until the first read-back arrives.

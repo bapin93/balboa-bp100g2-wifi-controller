@@ -3,12 +3,17 @@
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 
+#include <functional>
+
 #include "balboa/spa.h"
+#include "storage/maintenance.h"
+#include "storage/runtime_log.h"
 #include "storage/store.h"
 
 class WebServerHub {
  public:
-  WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config);
+  WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config, const RuntimeLog &runtime,
+               MaintenanceLog &maintenance);
 
   void begin();
   void loop();
@@ -17,9 +22,12 @@ class WebServerHub {
  private:
   void setupRoutes();
   void handleCommandBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
+  void handleMaintenanceBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
+  void writeMaintenanceJson(JsonObject out);
   bool isAuthorized(AsyncWebServerRequest *request) const;
   void sendIndex(AsyncWebServerRequest *request);
   void sendState(AsyncWebServerRequest *request);
+  void sendJson(AsyncWebServerRequest *request, const std::function<void(JsonObject)> &fill);
   void sendConfig(AsyncWebServerRequest *request);
   void sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result);
   void persistFilterCyclesRead();
@@ -33,6 +41,8 @@ class WebServerHub {
   Balboa::SpaController &spa_;
   Store &store_;
   DeviceConfig &config_;
+  const RuntimeLog &runtime_;
+  MaintenanceLog &maintenance_;
   uint32_t lastBroadcastMs_ = 0;
   bool stateBroadcastPending_ = false;
 };
