@@ -59,6 +59,8 @@ class HeatController {
   // after a couple of minutes), but no longer than this, so a long heat-up still stops when the plan says.
   // The owner's own changes (cancel, Auto off) don't wait.
   static constexpr uint32_t LetHeaterFinishSec = 20 * 60;
+  // Heating stretches this many coast steps apart or fewer are run as one, avoiding a stop and restart.
+  static constexpr size_t MergeGapSteps = 2;
 
   // Returns the set temp to send now, or NAN for none. Call about once a second.
   float tick(const ControllerTick &tick, const PlanContext &context);
@@ -108,7 +110,7 @@ class HeatController {
   uint32_t manualUntil() const;
   void endSoak(uint32_t now);
   void replan(const ControllerTick &tick, const PlanContext &context);
-  float setpointFromPlan(uint32_t now, const PlanContext &context) const;
+  float setpointFromPlan(uint32_t now, const PlanContext &context, bool heaterOn) const;
   size_t stepAt(uint32_t now) const;
   void startRestore(float temp, uint32_t now);
   void writeNextHeat(JsonObject out, uint32_t now) const;

@@ -37,7 +37,8 @@ class ThermalModel {
  public:
   static constexpr size_t MaxObservations = 30;
   static constexpr uint32_t UseGraceSec = 30 * 60;  // treat the cover as off this long after the last use
-  static constexpr uint32_t MinHeatRunSec = 20 * 60;
+  // Timed between whole-degree ticks, so even short runs are accurate; plan-driven heat-ups are often short.
+  static constexpr uint32_t MinHeatRunSec = 10 * 60;
   static constexpr float MinHeatRiseF = 2.0f;
   static constexpr uint32_t MinCoolRunSec = 3 * 3600;
   static constexpr uint32_t MaxCoolRunSec = 8 * 3600;  // long coasts are split so they yield more readings

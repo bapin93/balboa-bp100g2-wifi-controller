@@ -97,6 +97,16 @@ void test_short_runs_are_ignored() {
   TEST_ASSERT_FALSE(model.dirty());
 }
 
+void test_short_plan_heat_up_counts() {
+  // A 15-minute top-up at 11°F/hr: about 2.75°F, ticks a bit over 10 minutes apart.
+  ThermalModel model;
+  Tub tub{model, 11.0f, ThermalModel::DefaultLossCoeff, 40.0f, 97.5f};
+  tub.run(15 * 60, true);
+  tub.run(60, false);
+  TEST_ASSERT_EQUAL_UINT32(1, model.heatRuns().size());
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 11.0f, model.heatRuns().back().value);
+}
+
 void test_gap_restarts_runs() {
   ThermalModel model;
   Tub tub{model, 6.0f, ThermalModel::DefaultLossCoeff, 40.0f, 95.5f};
@@ -163,6 +173,7 @@ int main() {
   RUN_TEST(test_skips_runs_while_in_use);
   RUN_TEST(test_skips_cooling_without_forecast);
   RUN_TEST(test_short_runs_are_ignored);
+  RUN_TEST(test_short_plan_heat_up_counts);
   RUN_TEST(test_gap_restarts_runs);
   RUN_TEST(test_median_once_enough_runs);
   RUN_TEST(test_hours_to_heat);

@@ -94,7 +94,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
         replan(tick, context);
       }
       // Without a water temp there's no plan; heating now is the safe way to still be ready.
-      desired = plan_.ok ? setpointFromPlan(now, context) : soak_.target;
+      desired = plan_.ok ? setpointFromPlan(now, context, tick.heating) : soak_.target;
       planned = plan_.ok;
     }
   }
@@ -102,7 +102,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
     if (replanNeeded_ || !plan_.ok || now >= planStart_ + StepSec) {
       replan(tick, context);
     }
-    desired = plan_.ok ? setpointFromPlan(now, context) : comfort_;
+    desired = plan_.ok ? setpointFromPlan(now, context, tick.heating) : comfort_;
     planned = plan_.ok;
   }
   if (isnan(desired)) {
@@ -328,19 +328,38 @@ size_t HeatController::stepAt(uint32_t now) const {
   return now < planStart_ ? 0 : (now - planStart_) / StepSec;
 }
 
-// Heating: the highest temp in this run of heated steps, so the set temp stays put for the whole run.
+// Heating: the highest temp in this run of heated steps, so the set temp stays put for the whole run. Runs
+// separated by a pause of MergeGapSteps or less count as one, so the heater doesn't stop and restart for it.
 // Coasting: a little under the lowest temp before heating resumes, so the spa only steps in if the
 // water cools faster than planned.
-float HeatController::setpointFromPlan(uint32_t now, const PlanContext &context) const {
+float HeatController::setpointFromPlan(uint32_t now, const PlanContext &context, bool heaterOn) const {
   const size_t count = plan_.heat.size();
   size_t s = stepAt(now);
   if (s >= count) {
     return planTarget_;
   }
+  // Index of the step where heating resumes after a short pause starting at `from`, or `from` if it doesn't.
+  const auto resumesSoon = [&](size_t from) {
+    size_t next = from;
+    while (next < count && plan_.heat[next] == 0 && next - from < MergeGapSteps) {
+      ++next;
+    }
+    return next < count && plan_.heat[next] > 0 ? next : from;
+  };
+  if (plan_.heat[s] == 0 && heaterOn) {
+    s = resumesSoon(s);  // still running from the last stretch, and more is coming: keep going
+  }
   if (plan_.heat[s] > 0) {
     float high = plan_.temp[s];
-    for (; s < count && plan_.heat[s] > 0; ++s) {
-      high = std::max(high, plan_.temp[s]);
+    for (;;) {
+      for (; s < count && plan_.heat[s] > 0; ++s) {
+        high = std::max(high, plan_.temp[s]);
+      }
+      const size_t next = resumesSoon(s);
+      if (next == s) {
+        break;
+      }
+      s = next;
     }
     return std::min(planTarget_, ceilf(high - 0.05f));
   }
