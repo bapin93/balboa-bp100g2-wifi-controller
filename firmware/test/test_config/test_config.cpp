@@ -43,7 +43,6 @@ void test_valid_config_updates_filter_cycles() {
 
   JsonDocument doc;
   JsonObject caps = doc["capabilities"].to<JsonObject>();
-  caps["filterCycles"] = true;
   JsonObject filters = doc["filterCycles"].to<JsonObject>();
   filters["cycle1Start"] = 6;
   filters["cycle1StartMinute"] = 15;
@@ -57,7 +56,6 @@ void test_valid_config_updates_filter_cycles() {
 
   TEST_ASSERT_TRUE(validateConfigJson(doc.as<JsonVariantConst>(), current, next, &error));
   TEST_ASSERT_NULL(error);
-  TEST_ASSERT_TRUE(next.filterCycles);
   TEST_ASSERT_EQUAL_UINT8(6, next.filterCycle1Start);
   TEST_ASSERT_EQUAL_UINT8(15, next.filterCycle1StartMinute);
   TEST_ASSERT_EQUAL_UINT8(3, next.filterCycle1Duration);

@@ -13,9 +13,7 @@ struct DeviceConfig {
   bool jet1 = true;
   bool jet2 = false;
   bool light = true;
-  bool heatMode = false;
   bool setTime = true;
-  bool filterCycles = false;
   bool backlight = false;
   uint8_t filterCycle1Start = 8;
   uint8_t filterCycle1StartMinute = 0;

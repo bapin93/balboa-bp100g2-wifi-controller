@@ -18,17 +18,15 @@ class WebServerHub {
   void setupRoutes();
   void handleCommandBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
   bool isAuthorized(AsyncWebServerRequest *request) const;
-  bool isValidCommandLogName(const String &name) const;
+  void sendIndex(AsyncWebServerRequest *request);
   void sendState(AsyncWebServerRequest *request);
   void sendConfig(AsyncWebServerRequest *request);
-  void sendCommandLogList(AsyncWebServerRequest *request);
-  void sendCommandLogFile(AsyncWebServerRequest *request);
   void sendCommandResult(AsyncWebServerRequest *request, const Balboa::CommandResult &result);
-  void cacheAcceptedCommand(JsonVariantConst command, const Balboa::CommandResult &result);
-  void persistFilterCycleCache(const Balboa::FilterCycleCache &cache);
+  void persistFilterCyclesRead();
   String stateJson();
   String commandResultJson(const Balboa::CommandResult &result);
-  void applyConfigToSpa();
+  void applyCapabilitiesToSpa();
+  void applyFilterCyclesToSpa();
 
   AsyncWebServer server_{80};
   AsyncWebSocket ws_{"/ws"};

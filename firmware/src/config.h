@@ -16,8 +16,6 @@ constexpr const char *Hostname = "bp100g2-controller";
 
 constexpr const char *ConfigPath = "/config.json";
 constexpr size_t MaxCommandQueue = 8;
-constexpr uint32_t CommandTimeoutMs = 2500;
 constexpr uint32_t StateBroadcastMinMs = 250;
-constexpr uint32_t StateStaleMs = 5000;
 
 }  // namespace AppConfig

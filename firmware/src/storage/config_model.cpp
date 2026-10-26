@@ -90,9 +90,7 @@ bool validateConfigJson(JsonVariantConst input, const DeviceConfig &current, Dev
     setBoolIfPresent(caps, "jet1", next.jet1);
     setBoolIfPresent(caps, "jet2", next.jet2);
     setBoolIfPresent(caps, "light", next.light);
-    setBoolIfPresent(caps, "heatMode", next.heatMode);
     setBoolIfPresent(caps, "setTime", next.setTime);
-    setBoolIfPresent(caps, "filterCycles", next.filterCycles);
     setBoolIfPresent(caps, "backlight", next.backlight);
   }
 
@@ -148,9 +146,7 @@ void configToJson(const DeviceConfig &config, JsonObject out) {
   caps["jet1"] = config.jet1;
   caps["jet2"] = config.jet2;
   caps["light"] = config.light;
-  caps["heatMode"] = config.heatMode;
   caps["setTime"] = config.setTime;
-  caps["filterCycles"] = config.filterCycles;
   caps["backlight"] = config.backlight;
 
   JsonObject filters = out["filterCycles"].to<JsonObject>();

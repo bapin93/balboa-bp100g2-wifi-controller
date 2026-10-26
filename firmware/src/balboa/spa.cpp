@@ -7,50 +7,16 @@
 #include <cstdlib>
 #include <utility>
 
-#include <LittleFS.h>
-
 #include "config.h"
 
 namespace Balboa {
 namespace {
 
-constexpr uint8_t ButtonTempUp = 0x01;
-constexpr uint8_t ButtonTempDown = 0x02;
 constexpr uint8_t ButtonJet1 = 0x04;
 constexpr uint8_t ButtonJet2 = 0x05;
-constexpr uint8_t ButtonLight = 0x91;
-constexpr uint8_t ButtonHeatMode = 0x51;
 constexpr uint8_t ToggleLight1 = 0x11;
-constexpr uint32_t FilterProgramDebugDelayMs = 650;
-constexpr uint32_t FilterProgramEntryDelayMs = 650;
-constexpr uint8_t FilterProgramMaxSteps = 80;
 constexpr size_t DebugLogMaxLines = 160;
 constexpr size_t StatusCaptureMaxLines = 500;
-constexpr size_t CommandTraceMaxLines = 420;
-
-enum TargetTempPhase : uint8_t {
-  TargetTempIdle = 0,
-  TargetTempActivateFlash,
-  TargetTempAdjust,
-};
-
-enum FilterProgramPhase : uint8_t {
-  FilterProgramIdle = 0,
-  FilterProgramStartTempFlash,
-  FilterProgramNavigate,
-  FilterProgramSelectEnable,
-  FilterProgramSetEnable,
-  FilterProgramSelectBegin,
-  FilterProgramAdjustStartHour,
-  FilterProgramSelectStartMinute,
-  FilterProgramAdjustStartMinute,
-  FilterProgramSelectRunHours,
-  FilterProgramAdjustRunHour,
-  FilterProgramSelectRunMinute,
-  FilterProgramAdjustRunMinute,
-  FilterProgramShowEnd,
-  FilterProgramSave,
-};
 
 bool isFiniteTemp(float value) {
   return !isnan(value) && value > 30.0f && value < 120.0f;
@@ -105,42 +71,6 @@ bool shouldLogStatus(const SpaState &state) {
   return changed;
 }
 
-const char *filterPhaseName(uint8_t phase) {
-  switch (phase) {
-    case FilterProgramIdle:
-      return "idle";
-    case FilterProgramStartTempFlash:
-      return "start_temp_flash";
-    case FilterProgramNavigate:
-      return "navigate_to_filter";
-    case FilterProgramSelectEnable:
-      return "select_enable";
-    case FilterProgramSetEnable:
-      return "set_enable";
-    case FilterProgramSelectBegin:
-      return "select_begin";
-    case FilterProgramAdjustStartHour:
-      return "adjust_start_hour";
-    case FilterProgramSelectStartMinute:
-      return "select_start_minute";
-    case FilterProgramAdjustStartMinute:
-      return "adjust_start_minute";
-    case FilterProgramSelectRunHours:
-      return "select_run_hours";
-    case FilterProgramAdjustRunHour:
-      return "adjust_run_hour";
-    case FilterProgramSelectRunMinute:
-      return "select_run_minute";
-    case FilterProgramAdjustRunMinute:
-      return "adjust_run_minute";
-    case FilterProgramShowEnd:
-      return "show_f1_ends";
-    case FilterProgramSave:
-      return "save";
-  }
-  return "unknown";
-}
-
 }  // namespace
 
 void SpaController::begin(HardwareSerial &serial, int txEnablePin) {
@@ -180,12 +110,6 @@ void SpaController::loop() {
   }
   processRx();
   processTx();
-  processTargetTemp();
-  processFilterProgram();
-}
-
-bool SpaController::hasFreshState(uint32_t nowMs) const {
-  return state_.valid && nowMs - state_.lastUpdateMs <= AppConfig::StateStaleMs;
 }
 
 bool SpaController::consumeStateChanged() {
@@ -208,7 +132,6 @@ void SpaController::setConfiguredFilterCycles(uint8_t cycle1Start, uint8_t cycle
   state_.filterCycle2StartMinute = cycle2StartMinute;
   state_.filterCycle2Dur = cycle2Duration;
   state_.filterCycle2DurMinute = cycle2DurationMinute;
-  state_.lastUpdateMs = millis();
   stateChanged_ = true;
   Serial.printf("[balboa] cached filter cycles c1=%u:%02u/%u:%02u c2=%s %u:%02u/%u:%02u\n", cycle1Start,
                 cycle1StartMinute, cycle1Duration, cycle1DurationMinute, cycle2Enabled ? "on" : "off",
@@ -249,31 +172,21 @@ void SpaController::writeStateJson(JsonObject out) const {
   filters["cycle2Duration"] = state_.filterCycle2Dur;
   filters["cycle2DurationMinute"] = state_.filterCycle2DurMinute;
   filters["valid"] = state_.filterCyclesValid;
+  filters["seq"] = filterCyclesSeq_;
   char timeBuffer[6];
   snprintf(timeBuffer, sizeof(timeBuffer), "%02u:%02u", state_.hour, state_.minute);
   out["spaTime"] = timeBuffer;
   out["lastUpdateMs"] = state_.lastUpdateMs;
   out["valid"] = state_.valid;
-  out["filterProgramActive"] = filterProgramActive_;
-  out["filterProgramReadOnly"] = filterProgramReadOnly_;
-  out["filterProgramFailed"] = filterProgramLastFailed_;
-  out["filterProgramError"] = filterProgramLastError_;
   out["statusCaptureActive"] = statusCaptureActive_;
   out["statusCaptureLines"] = statusCaptureLog_.size();
-  if (targetTempActive_) {
-    out["targetSetTemp"] = targetSetTemp_;
-  } else {
-    out["targetSetTemp"] = nullptr;
-  }
 }
 
 void SpaController::writeCapabilitiesJson(JsonObject out) const {
   out["jet1"] = capabilities_.jet1;
   out["jet2"] = capabilities_.jet2;
   out["light"] = capabilities_.light;
-  out["heatMode"] = capabilities_.heatMode;
   out["setTime"] = capabilities_.setTime;
-  out["filterCycles"] = capabilities_.filterCycles;
   out["backlight"] = capabilities_.backlight;
 }
 
@@ -314,13 +227,17 @@ String SpaController::statusCaptureText() const {
   return out;
 }
 
-bool SpaController::consumeFilterCycleCache(FilterCycleCache &out) {
-  if (!filterCycleCachePending_) {
-    return false;
-  }
-  out = filterCycleCache_;
-  filterCycleCachePending_ = false;
-  return true;
+bool SpaController::consumeFilterCyclesRead() {
+  const bool pending = filterCyclesReadPending_;
+  filterCyclesReadPending_ = false;
+  return pending;
+}
+
+void SpaController::publishFilterCyclesRead() {
+  state_.filterCyclesValid = true;
+  ++filterCyclesSeq_;
+  filterCyclesReadPending_ = true;
+  stateChanged_ = true;
 }
 
 void SpaController::logDebug(const char *format, ...) {
@@ -337,7 +254,6 @@ void SpaController::logDebug(const char *format, ...) {
   while (debugLog_.size() > DebugLogMaxLines) {
     debugLog_.pop_front();
   }
-  appendCommandTrace(line);
 }
 
 void SpaController::logStatusCapture(const char *format, ...) {
@@ -357,74 +273,6 @@ void SpaController::logStatusCapture(const char *format, ...) {
   while (statusCaptureLog_.size() > StatusCaptureMaxLines) {
     statusCaptureLog_.pop_front();
   }
-}
-
-void SpaController::startCommandTrace(const char *name) {
-  commandTraceActive_ = true;
-  commandTraceName_ = name;
-  commandTraceStartedMs_ = millis();
-  commandTraceLog_.clear();
-  filterProgramLastFailed_ = false;
-  filterProgramLastError_ = "";
-  String line = String(commandTraceStartedMs_) + " command trace started name=" + commandTraceName_;
-  commandTraceLog_.push_back(line);
-}
-
-void SpaController::appendCommandTrace(const String &line) {
-  if (!commandTraceActive_) {
-    return;
-  }
-  commandTraceLog_.push_back(line);
-  while (commandTraceLog_.size() > CommandTraceMaxLines) {
-    commandTraceLog_.pop_front();
-  }
-}
-
-String SpaController::commandTraceTimestamp() const {
-  time_t now = time(nullptr);
-  if (now > 1700000000) {
-    struct tm localTime;
-    localtime_r(&now, &localTime);
-    char timestamp[20];
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &localTime);
-    return String(timestamp);
-  }
-  return String("uptime-") + String(commandTraceStartedMs_);
-}
-
-void SpaController::saveCommandTraceFailure(const char *reason) {
-  if (!LittleFS.exists("/command-logs")) {
-    LittleFS.mkdir("/command-logs");
-  }
-  const String path = String("/command-logs/") + commandTraceName_ + "-" + commandTraceTimestamp() + ".log";
-  File file = LittleFS.open(path, "w");
-  if (!file) {
-    Serial.printf("[balboa] command trace save failed path=%s\n", path.c_str());
-    return;
-  }
-  file.printf("name=%s\nreason=%s\nstarted_ms=%lu\nsaved_ms=%lu\n\n",
-              commandTraceName_.c_str(), reason, static_cast<unsigned long>(commandTraceStartedMs_),
-              static_cast<unsigned long>(millis()));
-  for (const String &line : commandTraceLog_) {
-    file.println(line);
-  }
-  file.close();
-  Serial.printf("[balboa] command trace saved path=%s reason=%s\n", path.c_str(), reason);
-}
-
-void SpaController::finishCommandTrace(bool success, const char *reason) {
-  if (!commandTraceActive_) {
-    return;
-  }
-  const String line = String(millis()) + " command trace finished status=" + (success ? "success" : "failure") +
-                      " reason=" + reason;
-  commandTraceLog_.push_back(line);
-  if (!success) {
-    saveCommandTraceFailure(reason);
-  }
-  filterProgramLastFailed_ = !success;
-  filterProgramLastError_ = success ? "" : reason;
-  commandTraceActive_ = false;
 }
 
 CommandResult SpaController::handleCommand(JsonVariantConst command) {
@@ -450,45 +298,11 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     return handleBenchCommand(action, command);
   }
 
-  if (strcmp(action, "tempUp") == 0) {
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
-    stateChanged_ = true;
-    return enqueueButton("temp_up", ButtonTempUp);
-  }
-  if (strcmp(action, "tempDown") == 0) {
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
-    stateChanged_ = true;
-    return enqueueButton("temp_down", ButtonTempDown);
-  }
-
   if (strcmp(action, "setTemp") == 0) {
     const int value = command["value"] | -1;
     if (value < 50 || value > 104) {
       return {CommandStatus::InvalidValue, "set temperature must be 50-104 F"};
     }
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
-    stateChanged_ = true;
     Serial.printf("[balboa] direct target temp=%d\n", value);
     return enqueue("set_temp_direct", buildSetTemperatureCommand(static_cast<uint8_t>(value)));
   }
@@ -511,15 +325,11 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
                      durationMinute > 45 || durationMinute % 15 != 0)) {
       return {CommandStatus::InvalidValue, "filter minutes must be 0, 15, 30, or 45"};
     }
-
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
+    // The set command writes both cycles, so the untouched one must come from the spa, not a stale cache.
+    if (!state_.filterCyclesValid) {
+      enqueue("read_filter_cycles", buildFilterCyclesRequest());
+      return {CommandStatus::SpaStateUnavailable, "filter cycles not read from spa yet, try again"};
+    }
 
     uint8_t cycle1Start = state_.filterCycle1Start;
     uint8_t cycle1StartMinute = state_.filterCycle1StartMinute;
@@ -543,7 +353,6 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
       cycle1DurationMinute = static_cast<uint8_t>(durationMinute);
     }
 
-    stateChanged_ = true;
     logDebug("[balboa] direct filter set c1=%02u:%02u/%02u:%02u c2=%u %02u:%02u/%02u:%02u",
              cycle1Start, cycle1StartMinute, cycle1Duration, cycle1DurationMinute,
              cycle2Enabled ? 1 : 0, cycle2Start, cycle2StartMinute, cycle2Duration, cycle2DurationMinute);
@@ -573,16 +382,6 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
   if (strcmp(action, "light") == 0) {
     return capabilities_.light ? enqueue("light_toggle_item", buildToggleItemCommand(ToggleLight1))
                                : CommandResult{CommandStatus::UnsupportedFeature, "light unsupported"};
-  }
-  if (strcmp(action, "heatMode") == 0) {
-    if (!capabilities_.heatMode) {
-      return {CommandStatus::UnsupportedFeature, "heat mode unsupported"};
-    }
-    const int value = command["value"] | -1;
-    if (value < 0 || value > 2) {
-      return {CommandStatus::InvalidValue, "heat mode must be 0, 1, or 2"};
-    }
-    return enqueueButton("heat_mode", ButtonHeatMode);
   }
   if (strcmp(action, "syncTime") == 0) {
     if (!capabilities_.setTime) {
@@ -636,22 +435,6 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     Serial.printf("[bench] setTemp=%d\n", value);
     return {CommandStatus::Accepted, "bench set temperature updated"};
   }
-  if (strcmp(action, "tempUp") == 0) {
-    if (isFiniteTemp(state_.setTemp) && state_.setTemp < 104.0f) {
-      state_.setTemp += 1.0f;
-    }
-    stateChanged_ = true;
-    Serial.printf("[bench] temp_up setTemp=%.0f\n", state_.setTemp);
-    return {CommandStatus::Accepted, "bench temperature raised"};
-  }
-  if (strcmp(action, "tempDown") == 0) {
-    if (isFiniteTemp(state_.setTemp) && state_.setTemp > 50.0f) {
-      state_.setTemp -= 1.0f;
-    }
-    stateChanged_ = true;
-    Serial.printf("[bench] temp_down setTemp=%.0f\n", state_.setTemp);
-    return {CommandStatus::Accepted, "bench temperature lowered"};
-  }
   if (strcmp(action, "jet1") == 0) {
     state_.jet1Speed = (state_.jet1Speed + 1) % 3;
     state_.jet1 = state_.jet1Speed != 0;
@@ -671,16 +454,6 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     stateChanged_ = true;
     Serial.printf("[bench] light=%s\n", state_.light ? "on" : "off");
     return {CommandStatus::Accepted, "bench light toggled"};
-  }
-  if (strcmp(action, "heatMode") == 0) {
-    const int value = command["value"] | -1;
-    if (value < 0 || value > 2) {
-      return {CommandStatus::InvalidValue, "heat mode must be 0, 1, or 2"};
-    }
-    state_.heatMode = static_cast<uint8_t>(value);
-    stateChanged_ = true;
-    Serial.printf("[bench] heatMode=%d\n", value);
-    return {CommandStatus::Accepted, "bench heat mode updated"};
   }
   if (strcmp(action, "syncTime") == 0) {
     time_t now = time(nullptr);
@@ -703,25 +476,13 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     state_.filterCycle1StartMinute = static_cast<uint8_t>(command["startMinute"] | 0);
     state_.filterCycle1Dur = static_cast<uint8_t>(durationHour);
     state_.filterCycle1DurMinute = static_cast<uint8_t>(command["durationMinute"] | 0);
-    stateChanged_ = true;
+    publishFilterCyclesRead();
     Serial.printf("[bench] filter1 start=%u:%02u duration=%u:%02u\n", state_.filterCycle1Start,
                   state_.filterCycle1StartMinute, state_.filterCycle1Dur, state_.filterCycle1DurMinute);
     return {CommandStatus::Accepted, "bench filter 1 updated"};
   }
   if (strcmp(action, "readFilterCycles") == 0) {
-    filterCycleCache_.all = true;
-    filterCycleCache_.cycle1Start = state_.filterCycle1Start;
-    filterCycleCache_.cycle1StartMinute = state_.filterCycle1StartMinute;
-    filterCycleCache_.cycle1Duration = state_.filterCycle1Dur;
-    filterCycleCache_.cycle1DurationMinute = state_.filterCycle1DurMinute;
-    filterCycleCache_.cycle2Enabled = state_.filterCycle2Enabled;
-    filterCycleCache_.cycle2Start = state_.filterCycle2Start;
-    filterCycleCache_.cycle2StartMinute = state_.filterCycle2StartMinute;
-    filterCycleCache_.cycle2Duration = state_.filterCycle2Dur;
-    filterCycleCache_.cycle2DurationMinute = state_.filterCycle2DurMinute;
-    filterCycleCachePending_ = true;
-    state_.filterCyclesValid = true;
-    stateChanged_ = true;
+    publishFilterCyclesRead();
     Serial.println("[bench] filter cycles read");
     return {CommandStatus::Accepted, "bench filter cycles read"};
   }
@@ -737,7 +498,7 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     state_.filterCycle2StartMinute = static_cast<uint8_t>(command["startMinute"] | 0);
     state_.filterCycle2Dur = static_cast<uint8_t>(enabled ? durationHour : 0);
     state_.filterCycle2DurMinute = static_cast<uint8_t>(command["durationMinute"] | 0);
-    stateChanged_ = true;
+    publishFilterCyclesRead();
     Serial.printf("[bench] filter2 enabled=%u start=%u:%02u duration=%u:%02u\n", state_.filterCycle2Enabled ? 1 : 0,
                   state_.filterCycle2Start, state_.filterCycle2StartMinute, state_.filterCycle2Dur,
                   state_.filterCycle2DurMinute);
@@ -774,9 +535,7 @@ void SpaController::processRx() {
                          parsed->frame->source, parsed->frame->target,
                          bytesToHex(parsed->frame->payload).c_str(),
                          bytesToHex(encodeFrame(*parsed->frame)).c_str());
-        if (!filterProgramActive_) {
-          rawStatusCaptureCount_ = 4;
-        }
+        rawStatusCaptureCount_ = 4;
       } else if (!isPollFrame && !isDiscoveryFrame && !isIdlePanelFrame && !isStatusFrame) {
         Serial.printf("[balboa] rx nonstatus type=%02x src=%02x dst=%02x payload=%s wire=%s\n",
                       parsed->frame->type, parsed->frame->source, parsed->frame->target,
@@ -788,18 +547,13 @@ void SpaController::processRx() {
                          bytesToHex(encodeFrame(*parsed->frame)).c_str());
       }
       handleFrame(*parsed->frame);
-      if (isStatusFrame) {
+      // Guarded here because the hex-string arguments allocate even when capture is off.
+      if (isStatusFrame && statusCaptureActive_) {
         const uint8_t p0 = parsed->frame->payload.size() > 0 ? parsed->frame->payload[0] : 0;
         const uint8_t p1 = parsed->frame->payload.size() > 1 ? parsed->frame->payload[1] : 0;
         const uint8_t p7 = parsed->frame->payload.size() > 7 ? parsed->frame->payload[7] : 0;
         const uint8_t p8 = parsed->frame->payload.size() > 8 ? parsed->frame->payload[8] : 0;
         const uint8_t p9 = parsed->frame->payload.size() > 9 ? parsed->frame->payload[9] : 0;
-        if (commandTraceActive_) {
-          const std::string raw = bytesToHex(encodeFrame(*parsed->frame));
-          const std::string payload = bytesToHex(parsed->frame->payload);
-          String line = String(millis()) + " status raw=" + raw.c_str() + " payload=" + payload.c_str();
-          appendCommandTrace(line);
-        }
         logStatusCapture("status raw=%s payload=%s menu=%02x/%02x selector=%02x edit=%02u:%02u water=%.0f set=%.0f time=%02u:%02u heatMode=%u heating=%u heatPending=%u jets=%u/%u jetSpeed=%u/%u light=%u",
                          bytesToHex(encodeFrame(*parsed->frame)).c_str(),
                          bytesToHex(parsed->frame->payload).c_str(),
@@ -854,445 +608,19 @@ void SpaController::processTx() {
   Serial.printf("[balboa] tx %s %s\n", command.label.c_str(), bytesToHex(command.frame).c_str());
   transmit(command.frame);
   Serial.println("[balboa] tx complete");
-  if (command.label.startsWith("target_")) {
-    targetTempWaitingForStatus_ = true;
-    targetTempStatusMs_ = state_.lastUpdateMs;
-    targetTempCommandMs_ = now;
-  }
-  if (command.label.startsWith("filter_")) {
-    filterProgramQueued_ = false;
-    filterProgramWaiting_ = true;
-    filterProgramStatusMs_ = state_.lastUpdateMs;
-    filterProgramCommandMs_ = now;
-    filterProgramWaitForEditChange_ = command.label == "filter_start_hour" ||
-                                      command.label == "filter_start_minute" ||
-                                      command.label == "filter_run_hour" ||
-                                      command.label == "filter_run_minute";
-    filterProgramWaitHour_ = editValueHour_;
-    filterProgramWaitMinute_ = editValueMinute_;
-  }
   lastTxMs_ = now;
-}
-
-void SpaController::processFilterProgram() {
-  if (!filterProgramActive_) {
-    return;
-  }
-
-  const uint32_t now = millis();
-  if (filterProgramQueued_) {
-    return;
-  }
-
-  uint32_t waitTimeoutMs = 1800;
-  if (filterProgramPhase_ == FilterProgramStartTempFlash) {
-    waitTimeoutMs = 250;
-  }
-  const uint8_t targetSelector = filterProgramCycle_ == 2 ? 0x08 : 0x04;
-  const bool onStartHourPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0b;
-  const bool onStartHourEdit = menuMajor_ == 0x04 && menuMinor_ == 0x07;
-  const bool onStartMinuteEdit = menuMajor_ == 0x04 && menuMinor_ == 0x08;
-  const bool onRunHoursPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0d;
-  const bool onFilterEndPrompt = menuMajor_ == 0x06 && menuMinor_ == 0x0c;
-  const bool onRunHourEdit = menuMajor_ == 0x07 && menuMinor_ == 0x07;
-  const bool onRunMinuteEdit = menuMajor_ == 0x07 && menuMinor_ == 0x08;
-  const bool onFilterMenu = menuMajor_ == 0x03 && menuMinor_ == 0x17 && filterMenuSelector_ == targetSelector;
-  const bool onFilter2EnableOff = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0e &&
-                                  filterMenuSelector_ == targetSelector;
-  const bool onFilter2EnableOn = filterProgramCycle_ == 2 && menuMajor_ == 0x06 && menuMinor_ == 0x0f &&
-                                 filterMenuSelector_ == targetSelector;
-  const bool onFilter2EnableScreen = onFilter2EnableOff || onFilter2EnableOn;
-  const bool filter2EnableMatched = filterProgramEnabled_ ? onFilter2EnableOn : onFilter2EnableOff;
-  const auto filterPhaseReachedExpectedScreen = [&]() {
-    switch (filterProgramPhase_) {
-      case FilterProgramNavigate:
-        return onFilterMenu;
-      case FilterProgramSelectEnable:
-        return onFilter2EnableScreen;
-      case FilterProgramSetEnable:
-        return filter2EnableMatched;
-      case FilterProgramSelectBegin:
-        return onStartHourPrompt || onStartHourEdit;
-      case FilterProgramSelectStartMinute:
-        return onStartMinuteEdit;
-      case FilterProgramSelectRunHours:
-        return onRunHoursPrompt || onRunHourEdit;
-      case FilterProgramSelectRunMinute:
-        return onRunMinuteEdit;
-      case FilterProgramShowEnd:
-        return onFilterEndPrompt;
-      default:
-        return true;
-    }
-  };
-  if (filterProgramWaiting_) {
-    const bool statusChanged = state_.lastUpdateMs != filterProgramStatusMs_;
-    const bool editChanged = !filterProgramWaitForEditChange_ ||
-                             editValueHour_ != filterProgramWaitHour_ ||
-                             editValueMinute_ != filterProgramWaitMinute_;
-    const bool timedOut = now - filterProgramCommandMs_ >= waitTimeoutMs;
-    if ((!statusChanged || !filterPhaseReachedExpectedScreen() || !editChanged) && !timedOut) {
-      return;
-    }
-    logDebug("[balboa] filter%u phase complete phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u statusChanged=%u editChanged=%u elapsed=%lu",
-             filterProgramCycle_, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_, filterMenuSelector_,
-             editValueHour_, editValueMinute_, statusChanged ? 1 : 0, editChanged ? 1 : 0,
-             static_cast<unsigned long>(now - filterProgramCommandMs_));
-    filterProgramWaiting_ = false;
-    filterProgramWaitForEditChange_ = false;
-    logDebug("[balboa] filter%u screen flags targetSelector=%02x filterMenu=%u f2Enable=%u f2Off=%u f2On=%u startPrompt=%u startHour=%u startMin=%u runPrompt=%u endPrompt=%u runHour=%u runMin=%u targetEnabled=%u readOnly=%u",
-             filterProgramCycle_, targetSelector, onFilterMenu ? 1 : 0, onFilter2EnableScreen ? 1 : 0,
-             onFilter2EnableOff ? 1 : 0, onFilter2EnableOn ? 1 : 0,
-             onStartHourPrompt ? 1 : 0, onStartHourEdit ? 1 : 0, onStartMinuteEdit ? 1 : 0,
-             onRunHoursPrompt ? 1 : 0, onFilterEndPrompt ? 1 : 0, onRunHourEdit ? 1 : 0, onRunMinuteEdit ? 1 : 0,
-             filterProgramEnabled_ ? 1 : 0, filterProgramReadOnly_ ? 1 : 0);
-
-    if (filterProgramPhase_ == FilterProgramStartTempFlash) {
-      filterProgramPhase_ = FilterProgramNavigate;
-    } else if (filterProgramPhase_ == FilterProgramNavigate) {
-      if (onFilterMenu) {
-        filterProgramPhase_ = filterProgramCycle_ == 2 ? FilterProgramSelectEnable : FilterProgramSelectBegin;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSelectEnable) {
-      if (onFilter2EnableScreen) {
-        filterProgramPhase_ = FilterProgramSetEnable;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSetEnable) {
-      if (filter2EnableMatched && !filterProgramEnabled_) {
-        filterProgramPhase_ = FilterProgramSave;
-      } else if (filter2EnableMatched) {
-        filterProgramPhase_ = FilterProgramSelectBegin;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSelectBegin) {
-      if (onStartHourPrompt || onStartHourEdit) {
-        filterProgramPhase_ = FilterProgramAdjustStartHour;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSelectStartMinute) {
-      if (onStartMinuteEdit) {
-        filterProgramPhase_ = FilterProgramAdjustStartMinute;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSelectRunHours) {
-      if (onRunHoursPrompt || onRunHourEdit) {
-        filterProgramPhase_ = FilterProgramAdjustRunHour;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSelectRunMinute) {
-      if (onRunMinuteEdit) {
-        filterProgramPhase_ = FilterProgramAdjustRunMinute;
-      }
-    } else if (filterProgramPhase_ == FilterProgramShowEnd) {
-      if (onFilterEndPrompt) {
-        filterProgramPhase_ = FilterProgramSave;
-      }
-    } else if (filterProgramPhase_ == FilterProgramSave) {
-      filterProgramActive_ = false;
-      filterProgramReadOnly_ = false;
-      filterProgramHomeLightSent_ = false;
-      filterProgramWaitForEditChange_ = false;
-      stateChanged_ = true;
-      logDebug("[balboa] filter%u programming complete", filterProgramCycle_);
-      finishCommandTrace(true, "complete");
-      return;
-    }
-    logDebug("[balboa] filter%u next phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u",
-             filterProgramCycle_, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_, filterMenuSelector_,
-             editValueHour_, editValueMinute_);
-  }
-
-  if (!filterProgramActive_ || !queue_.empty()) {
-    return;
-  }
-
-  if (filterProgramStepCount_ > FilterProgramMaxSteps) {
-    logDebug("[balboa] filter%u abort: step limit phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u",
-             filterProgramCycle_, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_, filterMenuSelector_,
-             editValueHour_, editValueMinute_);
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
-    filterProgramHomeLightSent_ = false;
-    stateChanged_ = true;
-    finishCommandTrace(false, "step limit");
-    return;
-  }
-
-  const auto abortFilterProgram = [this](const char *reason) {
-    logDebug("[balboa] filter%u abort: %s phase=%s menu=%02x/%02x selector=%02x edit=%02u:%02u",
-             filterProgramCycle_, reason, filterPhaseName(filterProgramPhase_), menuMajor_, menuMinor_,
-             filterMenuSelector_, editValueHour_, editValueMinute_);
-    filterProgramActive_ = false;
-    filterProgramWaiting_ = false;
-    filterProgramQueued_ = false;
-    filterProgramWaitForEditChange_ = false;
-    filterProgramReadOnly_ = false;
-    filterProgramHomeLightSent_ = false;
-    stateChanged_ = true;
-    finishCommandTrace(false, reason);
-  };
-
-  const auto sendFilterButton = [this, now](const char *label, uint8_t button, uint32_t minDelayMs = FilterProgramDebugDelayMs) {
-    logDebug("[balboa] filter%u send phase=%s label=%s button=%02x menu=%02x/%02x selector=%02x edit=%02u:%02u targetEnabled=%u readOnly=%u targetStart=%02u:%02u targetRun=%02u:%02u delay=%lu",
-             filterProgramCycle_, filterPhaseName(filterProgramPhase_), label, button, menuMajor_, menuMinor_,
-             filterMenuSelector_, editValueHour_, editValueMinute_, filterProgramEnabled_ ? 1 : 0,
-             filterProgramReadOnly_ ? 1 : 0,
-             filterProgramStartHour_, filterProgramStartMinute_, filterProgramDurationHour_,
-             filterProgramDurationMinute_, static_cast<unsigned long>(minDelayMs));
-    CommandResult result = enqueueButton(label, button, minDelayMs);
-    if (result.status == CommandStatus::Accepted) {
-      filterProgramQueued_ = true;
-      ++filterProgramStepCount_;
-    } else {
-      logDebug("[balboa] filter%u enqueue failed status=%s", filterProgramCycle_, commandStatusName(result.status));
-    }
-  };
-
-  switch (filterProgramPhase_) {
-    case FilterProgramStartTempFlash:
-      sendFilterButton("filter_temp_flash", ButtonTempDown, FilterProgramEntryDelayMs);
-      break;
-    case FilterProgramNavigate:
-      if (menuMajor_ == 0x03 && menuMinor_ == 0x17 &&
-          filterMenuSelector_ == (filterProgramCycle_ == 2 ? 0x08 : 0x04)) {
-        filterProgramHomeLightSent_ = false;
-        filterProgramPhase_ = filterProgramCycle_ == 2 ? FilterProgramSelectEnable : FilterProgramSelectBegin;
-      } else if (menuMajor_ == 0x00 && menuMinor_ == 0x00) {
-        if (filterProgramHomeLightSent_) {
-          filterProgramHomeLightSent_ = false;
-          sendFilterButton("filter_temp_flash_retry", ButtonTempDown, FilterProgramEntryDelayMs);
-        } else {
-          filterProgramHomeLightSent_ = true;
-          sendFilterButton("filter_nav_from_home", ButtonLight, FilterProgramDebugDelayMs);
-        }
-      } else {
-        filterProgramHomeLightSent_ = false;
-        const uint32_t delay = menuMajor_ == 0x03 && menuMinor_ == 0x10 ? FilterProgramEntryDelayMs : FilterProgramDebugDelayMs;
-        sendFilterButton("filter_nav", ButtonLight, delay);
-      }
-      break;
-    case FilterProgramSelectEnable:
-      logDebug("[balboa] filter2 select enable screen menu=%02x/%02x selector=%02x edit=%02u:%02u",
-               menuMajor_, menuMinor_, filterMenuSelector_, editValueHour_, editValueMinute_);
-      sendFilterButton("filter_enable_select", ButtonTempUp);
-      break;
-    case FilterProgramSetEnable:
-      logDebug("[balboa] filter2 set enable desired=%u menu=%02x/%02x selector=%02x edit=%02u:%02u",
-               filterProgramEnabled_ ? 1 : 0, menuMajor_, menuMinor_, filterMenuSelector_, editValueHour_,
-               editValueMinute_);
-      if (filterProgramReadOnly_ && menuMajor_ == 0x06 && filterMenuSelector_ == 0x08 &&
-          (menuMinor_ == 0x0e || menuMinor_ == 0x0f)) {
-        filterCycleCache_.cycle = 2;
-        filterCycleCache_.enabled = menuMinor_ == 0x0f;
-        state_.filterCycle2Enabled = filterCycleCache_.enabled;
-        if (!filterCycleCache_.enabled) {
-          filterCycleCache_.startHour = state_.filterCycle2Start;
-          filterCycleCache_.startMinute = state_.filterCycle2StartMinute;
-          filterCycleCache_.durationHour = state_.filterCycle2Dur;
-          filterCycleCache_.durationMinute = state_.filterCycle2DurMinute;
-          filterCycleCachePending_ = true;
-          stateChanged_ = true;
-          logDebug("[balboa] filter2 read complete enabled=0");
-          filterProgramPhase_ = FilterProgramSave;
-        } else {
-          logDebug("[balboa] filter2 read enabled=1");
-          filterProgramPhase_ = FilterProgramSelectBegin;
-        }
-        break;
-      }
-      if (menuMajor_ == 0x06 && filterMenuSelector_ == 0x08 &&
-          ((filterProgramEnabled_ && menuMinor_ == 0x0f) || (!filterProgramEnabled_ && menuMinor_ == 0x0e))) {
-        logDebug("[balboa] filter2 enable already matched desired=%u", filterProgramEnabled_ ? 1 : 0);
-        filterProgramPhase_ = filterProgramEnabled_ ? FilterProgramSelectBegin : FilterProgramSave;
-      } else if (filterProgramEnabled_) {
-        sendFilterButton("filter_enable_on", ButtonTempUp);
-      } else {
-        sendFilterButton("filter_enable_off", ButtonTempDown);
-      }
-      break;
-    case FilterProgramSelectBegin:
-      sendFilterButton("filter_begin", filterProgramCycle_ == 2 ? ButtonLight : ButtonTempUp);
-      break;
-    case FilterProgramAdjustStartHour:
-      if (menuMajor_ == 0x06 && menuMinor_ == 0x0b) {
-        sendFilterButton("filter_start_hour_enter", ButtonTempUp);
-        break;
-      }
-      if (menuMajor_ != 0x04 || menuMinor_ != 0x07) {
-        abortFilterProgram("expected start-hour edit screen");
-        break;
-      }
-      if (filterProgramReadOnly_) {
-        filterCycleCache_.cycle = filterProgramCycle_;
-        filterCycleCache_.enabled = true;
-        filterCycleCache_.startHour = editValueHour_;
-        logDebug("[balboa] filter%u read start hour=%u", filterProgramCycle_, filterCycleCache_.startHour);
-        filterProgramPhase_ = FilterProgramSelectStartMinute;
-        break;
-      }
-      if (editValueHour_ == filterProgramStartHour_) {
-        logDebug("[balboa] filter%u matched start hour=%u", filterProgramCycle_, editValueHour_);
-        filterProgramPhase_ = FilterProgramSelectStartMinute;
-      } else {
-        sendFilterButton("filter_start_hour", editValueHour_ < filterProgramStartHour_ ? ButtonTempUp : ButtonTempDown);
-      }
-      break;
-    case FilterProgramSelectStartMinute:
-      sendFilterButton("filter_start_minute_select", ButtonLight);
-      break;
-    case FilterProgramAdjustStartMinute:
-      if (menuMajor_ != 0x04 || menuMinor_ != 0x08) {
-        abortFilterProgram("expected start-minute edit screen");
-        break;
-      }
-      if (filterProgramReadOnly_) {
-        filterCycleCache_.startMinute = editValueMinute_;
-        logDebug("[balboa] filter%u read start minute=%u", filterProgramCycle_, filterCycleCache_.startMinute);
-        filterProgramPhase_ = FilterProgramSelectRunHours;
-        break;
-      }
-      if (editValueMinute_ == filterProgramStartMinute_) {
-        logDebug("[balboa] filter%u matched start minute=%u", filterProgramCycle_, editValueMinute_);
-        filterProgramPhase_ = FilterProgramSelectRunHours;
-      } else {
-        sendFilterButton("filter_start_minute",
-                         editValueMinute_ < filterProgramStartMinute_ ? ButtonTempUp : ButtonTempDown);
-      }
-      break;
-    case FilterProgramSelectRunHours:
-      sendFilterButton("filter_run_hour_select", ButtonLight);
-      break;
-    case FilterProgramAdjustRunHour:
-      if (menuMajor_ == 0x06 && menuMinor_ == 0x0d) {
-        sendFilterButton("filter_run_hour_enter", ButtonTempUp);
-        break;
-      }
-      if (menuMajor_ != 0x07 || menuMinor_ != 0x07) {
-        abortFilterProgram("expected run-hour edit screen");
-        break;
-      }
-      if (filterProgramReadOnly_) {
-        filterCycleCache_.durationHour = editValueHour_;
-        logDebug("[balboa] filter%u read run hour=%u", filterProgramCycle_, filterCycleCache_.durationHour);
-        filterProgramPhase_ = FilterProgramSelectRunMinute;
-        break;
-      }
-      if (editValueHour_ == filterProgramDurationHour_) {
-        logDebug("[balboa] filter%u matched run hour=%u", filterProgramCycle_, editValueHour_);
-        filterProgramPhase_ = FilterProgramSelectRunMinute;
-      } else {
-        sendFilterButton("filter_run_hour", editValueHour_ < filterProgramDurationHour_ ? ButtonTempUp : ButtonTempDown);
-      }
-      break;
-    case FilterProgramSelectRunMinute:
-      sendFilterButton("filter_run_minute_select", ButtonLight);
-      break;
-    case FilterProgramAdjustRunMinute:
-      if (menuMajor_ != 0x07 || menuMinor_ != 0x08) {
-        abortFilterProgram("expected run-minute edit screen");
-        break;
-      }
-      if (filterProgramReadOnly_) {
-        filterCycleCache_.durationMinute = editValueMinute_;
-        if (filterProgramCycle_ == 1) {
-          state_.filterCycle1Start = filterCycleCache_.startHour;
-          state_.filterCycle1StartMinute = filterCycleCache_.startMinute;
-          state_.filterCycle1Dur = filterCycleCache_.durationHour;
-          state_.filterCycle1DurMinute = filterCycleCache_.durationMinute;
-        } else {
-          state_.filterCycle2Enabled = true;
-          state_.filterCycle2Start = filterCycleCache_.startHour;
-          state_.filterCycle2StartMinute = filterCycleCache_.startMinute;
-          state_.filterCycle2Dur = filterCycleCache_.durationHour;
-          state_.filterCycle2DurMinute = filterCycleCache_.durationMinute;
-        }
-        filterCycleCachePending_ = true;
-        stateChanged_ = true;
-        logDebug("[balboa] filter%u read complete enabled=%u start=%02u:%02u run=%02u:%02u",
-                 filterProgramCycle_, filterCycleCache_.enabled ? 1 : 0,
-                 filterCycleCache_.startHour, filterCycleCache_.startMinute,
-                 filterCycleCache_.durationHour, filterCycleCache_.durationMinute);
-        filterProgramPhase_ = FilterProgramShowEnd;
-        break;
-      }
-      if (editValueMinute_ == filterProgramDurationMinute_) {
-        logDebug("[balboa] filter%u matched run minute=%u", filterProgramCycle_, editValueMinute_);
-        filterProgramPhase_ = FilterProgramShowEnd;
-      } else {
-        sendFilterButton("filter_run_minute",
-                         editValueMinute_ < filterProgramDurationMinute_ ? ButtonTempUp : ButtonTempDown);
-      }
-      break;
-    case FilterProgramShowEnd:
-      sendFilterButton("filter_show_end", ButtonLight);
-      break;
-    case FilterProgramSave:
-      sendFilterButton("filter_save", ButtonLight);
-      break;
-    default:
-      filterProgramActive_ = false;
-      filterProgramReadOnly_ = false;
-      filterProgramWaitForEditChange_ = false;
-      stateChanged_ = true;
-      finishCommandTrace(false, "unknown phase");
-      break;
-  }
-}
-
-void SpaController::processTargetTemp() {
-  if (!targetTempActive_) {
-    return;
-  }
-  const uint32_t now = millis();
-  if (!hasFreshState(now) || !isFiniteTemp(state_.setTemp)) {
-    return;
-  }
-
-  const int current = static_cast<int>(roundf(state_.setTemp));
-  if (current == targetSetTemp_) {
-    targetTempActive_ = false;
-    targetTempWaitingForStatus_ = false;
-    targetTempPhase_ = TargetTempIdle;
-    stateChanged_ = true;
-    Serial.printf("[balboa] target temp reached=%d\n", targetSetTemp_);
-    return;
-  }
-
-  if (!queue_.empty()) {
-    return;
-  }
-
-  if (targetTempWaitingForStatus_) {
-    if (state_.lastUpdateMs == targetTempStatusMs_ && now - targetTempCommandMs_ < 2500) {
-      return;
-    }
-    targetTempWaitingForStatus_ = false;
-  }
-
-  const bool raise = targetSetTemp_ > current;
-  const bool activateFlash = targetTempPhase_ == TargetTempActivateFlash;
-  const char *label = activateFlash ? (raise ? "target_temp_flash_up" : "target_temp_flash_down")
-                                    : (raise ? "target_temp_up" : "target_temp_down");
-  const uint8_t button = raise ? ButtonTempUp : ButtonTempDown;
-  CommandResult result = enqueueButton(label, button);
-  if (result.status == CommandStatus::Accepted) {
-    if (activateFlash) {
-      targetTempPhase_ = TargetTempAdjust;
-      Serial.printf("[balboa] target temp flash current=%d target=%d direction=%s\n", current, targetSetTemp_,
-                    raise ? "up" : "down");
-    } else {
-      Serial.printf("[balboa] target step current=%d target=%d direction=%s\n", current, targetSetTemp_,
-                    raise ? "up" : "down");
-    }
-  }
 }
 
 void SpaController::handleFrame(const Frame &frame) {
   if (frame.type == MessageStatusUpdate && decodeStatusFrame(frame)) {
+    if (!state_.valid && !state_.filterCyclesValid) {
+      enqueue("read_filter_cycles_boot", buildFilterCyclesRequest());
+    }
     state_.lastUpdateMs = millis();
     state_.valid = true;
     stateChanged_ = true;
   } else if (frame.type == MessageFilterCyclesResponse && decodeFilterCyclesResponse(frame)) {
-    stateChanged_ = true;
+    publishFilterCyclesRead();
   }
 }
 
@@ -1301,13 +629,13 @@ bool SpaController::decodeStatusFrame(const Frame &frame) {
     return false;
   }
 
-  // These offsets match the common BP-series status frame layout used by open
-  // Balboa clients. Serial logs expose raw frames so a real pack can adjust v2.
+  // Offsets follow the BWA status layout (github.com/ccutrer/balboa_worldwide_app/wiki, pybalboa).
   state_.hour = frame.payload[3] & 0x1f;
   state_.minute = frame.payload[4] & 0x3f;
-  state_.heatMode = frame.payload[3] & 0x03;
-  state_.tempRangeHigh = (frame.payload[3] & 0x04) != 0;
-  state_.priming = (frame.payload[4] & 0x01) != 0;
+  const uint8_t heatMode = frame.payload[5] & 0x03;
+  state_.heatMode = heatMode == 3 ? 2 : heatMode;  // packs report ready-in-rest as 2 or 3
+  state_.tempRangeHigh = (frame.payload[10] & 0x04) != 0;
+  state_.priming = frame.payload[1] == 0x01;
   state_.waterTemp = decodeTemp(frame.payload[2]);
   state_.setTemp = decodeTemp(frame.payload[20]);
   state_.heating = (frame.payload[10] & 0x10) != 0;
@@ -1327,8 +655,6 @@ bool SpaController::decodeStatusFrame(const Frame &frame) {
   } else if (menuMajor_ == 0x00 && menuMinor_ == 0x00) {
     state_.activeFilterCycle = 0;
   }
-  editValueHour_ = frame.payload[7];
-  editValueMinute_ = frame.payload[8];
   return true;
 }
 
@@ -1364,19 +690,6 @@ bool SpaController::decodeFilterCyclesResponse(const Frame &frame) {
   state_.filterCycle2StartMinute = cycle2StartMinute;
   state_.filterCycle2Dur = cycle2Duration;
   state_.filterCycle2DurMinute = cycle2DurationMinute;
-  state_.filterCyclesValid = true;
-
-  filterCycleCache_.all = true;
-  filterCycleCache_.cycle1Start = cycle1Start;
-  filterCycleCache_.cycle1StartMinute = cycle1StartMinute;
-  filterCycleCache_.cycle1Duration = cycle1Duration;
-  filterCycleCache_.cycle1DurationMinute = cycle1DurationMinute;
-  filterCycleCache_.cycle2Enabled = cycle2Enabled;
-  filterCycleCache_.cycle2Start = cycle2Start;
-  filterCycleCache_.cycle2StartMinute = cycle2StartMinute;
-  filterCycleCache_.cycle2Duration = cycle2Duration;
-  filterCycleCache_.cycle2DurationMinute = cycle2DurationMinute;
-  filterCycleCachePending_ = true;
 
   Serial.printf("[balboa] filter cycles response c1=%u:%02u/%u:%02u c2=%s %u:%02u/%u:%02u\n",
                 cycle1Start, cycle1StartMinute, cycle1Duration, cycle1DurationMinute,

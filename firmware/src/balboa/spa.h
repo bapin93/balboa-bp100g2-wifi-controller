@@ -14,9 +14,7 @@ struct SpaCapabilities {
   bool jet1 = true;
   bool jet2 = false;
   bool light = true;
-  bool heatMode = true;
   bool setTime = true;
-  bool filterCycles = false;
   bool backlight = false;
 };
 
@@ -29,7 +27,7 @@ struct SpaState {
   uint8_t jet2Speed = 0;
   bool blower = false;
   bool light = false;
-  uint8_t heatMode = 0;
+  uint8_t heatMode = 0;  // 0=ready, 1=rest, 2=ready-in-rest (read-only; the spa manages it)
   bool heating = false;
   bool heatPending = false;
   bool priming = false;
@@ -65,25 +63,6 @@ struct CommandResult {
   const char *message;
 };
 
-struct FilterCycleCache {
-  bool all = false;
-  uint8_t cycle = 1;
-  bool enabled = true;
-  uint8_t startHour = 0;
-  uint8_t startMinute = 0;
-  uint8_t durationHour = 0;
-  uint8_t durationMinute = 0;
-  bool cycle2Enabled = false;
-  uint8_t cycle1Start = 0;
-  uint8_t cycle1StartMinute = 0;
-  uint8_t cycle1Duration = 0;
-  uint8_t cycle1DurationMinute = 0;
-  uint8_t cycle2Start = 0;
-  uint8_t cycle2StartMinute = 0;
-  uint8_t cycle2Duration = 0;
-  uint8_t cycle2DurationMinute = 0;
-};
-
 class SpaController {
  public:
   void begin(HardwareSerial &serial, int txEnablePin);
@@ -97,7 +76,6 @@ class SpaController {
                                  uint8_t cycle1DurationMinute, bool cycle2Enabled,
                                  uint8_t cycle2Start, uint8_t cycle2StartMinute, uint8_t cycle2Duration,
                                  uint8_t cycle2DurationMinute);
-  bool hasFreshState(uint32_t nowMs) const;
 
   bool consumeStateChanged();
   void writeStateJson(JsonObject out) const;
@@ -110,7 +88,8 @@ class SpaController {
   String statusCaptureText() const;
   bool statusCaptureActive() const { return statusCaptureActive_; }
   size_t statusCaptureSize() const { return statusCaptureLog_.size(); }
-  bool consumeFilterCycleCache(FilterCycleCache &out);
+  // True once after each filter cycle read from the spa; values are in state().
+  bool consumeFilterCyclesRead();
 
   CommandResult handleCommand(JsonVariantConst command);
 
@@ -124,11 +103,10 @@ class SpaController {
 
   void processRx();
   void processTx();
-  void processTargetTemp();
-  void processFilterProgram();
   void updateBenchState();
   CommandResult handleBenchCommand(const char *action, JsonVariantConst command);
   void handleFrame(const Frame &frame);
+  void publishFilterCyclesRead();
   bool decodeStatusFrame(const Frame &frame);
   bool decodeFilterCyclesResponse(const Frame &frame);
   CommandResult enqueue(const char *label, std::vector<uint8_t> frame, uint32_t minDelayMs = 550);
@@ -136,11 +114,6 @@ class SpaController {
   void transmit(const std::vector<uint8_t> &frame);
   void logDebug(const char *format, ...);
   void logStatusCapture(const char *format, ...);
-  void startCommandTrace(const char *name);
-  void appendCommandTrace(const String &line);
-  void finishCommandTrace(bool success, const char *reason);
-  void saveCommandTraceFailure(const char *reason);
-  String commandTraceTimestamp() const;
 
   HardwareSerial *serial_ = nullptr;
   int txEnablePin_ = -1;
@@ -152,47 +125,15 @@ class SpaController {
   uint32_t lastTxMs_ = 0;
   bool benchMode_ = false;
   uint32_t lastBenchUpdateMs_ = 0;
-  bool targetTempActive_ = false;
-  bool targetTempWaitingForStatus_ = false;
-  uint8_t targetTempPhase_ = 0;
-  int targetSetTemp_ = 0;
-  uint32_t targetTempStatusMs_ = 0;
-  uint32_t targetTempCommandMs_ = 0;
   uint8_t rawStatusCaptureCount_ = 0;
-  uint8_t editValueHour_ = 0;
-  uint8_t editValueMinute_ = 0;
   uint8_t menuMajor_ = 0;
   uint8_t menuMinor_ = 0;
   uint8_t filterMenuSelector_ = 0;
-  bool filterProgramActive_ = false;
-  bool filterProgramWaiting_ = false;
-  bool filterProgramQueued_ = false;
-  bool filterProgramReadOnly_ = false;
-  bool filterProgramHomeLightSent_ = false;
-  uint8_t filterProgramPhase_ = 0;
-  uint8_t filterProgramCycle_ = 1;
-  bool filterProgramEnabled_ = true;
-  uint8_t filterProgramStartHour_ = 0;
-  uint8_t filterProgramStartMinute_ = 0;
-  uint8_t filterProgramDurationHour_ = 0;
-  uint8_t filterProgramDurationMinute_ = 0;
-  uint8_t filterProgramStepCount_ = 0;
-  uint32_t filterProgramStatusMs_ = 0;
-  uint32_t filterProgramCommandMs_ = 0;
-  bool filterProgramWaitForEditChange_ = false;
-  uint8_t filterProgramWaitHour_ = 0;
-  uint8_t filterProgramWaitMinute_ = 0;
-  bool filterProgramLastFailed_ = false;
-  String filterProgramLastError_;
-  bool filterCycleCachePending_ = false;
-  FilterCycleCache filterCycleCache_;
+  bool filterCyclesReadPending_ = false;
+  uint32_t filterCyclesSeq_ = 0;
   std::deque<String> debugLog_;
   bool statusCaptureActive_ = false;
   std::deque<String> statusCaptureLog_;
-  bool commandTraceActive_ = false;
-  String commandTraceName_;
-  uint32_t commandTraceStartedMs_ = 0;
-  std::deque<String> commandTraceLog_;
 };
 
 const char *commandStatusName(CommandStatus status);
