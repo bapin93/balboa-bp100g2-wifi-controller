@@ -31,6 +31,7 @@ struct ControllerTick {
   float setTemp = NAN;  // as the spa reports it
   float waterTemp = NAN;  // the live reading, or an estimate from the last one
   bool inUse = false;
+  bool heating = false;  // the heater is running right now
 };
 
 // Decides the spa's set temperature.
@@ -53,6 +54,10 @@ class HeatController {
   static constexpr uint32_t ManualAfterUseSec = 60 * 60;
   static constexpr uint32_t ManualMaxSec = 4 * 3600;  // when the tub is never used during the hold
   static constexpr float CoastMarginF = 2.0f;  // coast set temp sits this far under the plan's low point
+  // A lower set temp from the plan waits for a running heater to finish (so a short top-up isn't cut off
+  // after a couple of minutes), but no longer than this, so a long heat-up still stops when the plan says.
+  // The owner's own changes (cancel, Auto off) don't wait.
+  static constexpr uint32_t LetHeaterFinishSec = 20 * 60;
 
   // Returns the set temp to send now, or NAN for none. Call about once a second.
   float tick(const ControllerTick &tick, const PlanContext &context);
@@ -117,6 +122,7 @@ class HeatController {
   float lastSeenSet_ = NAN;
   float pendingSet_ = NAN;
   uint32_t pendingAt_ = 0;
+  uint32_t lowerHeldSince_ = 0;  // when a lower set temp started waiting on the heater; 0 = not waiting
   float restoreTemp_ = NAN;
   uint32_t restoreUntil_ = 0;
   float readyInHours_ = NAN;  // heat-up time to the comfort temp from the water now

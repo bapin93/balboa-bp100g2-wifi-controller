@@ -77,6 +77,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
   }
 
   float desired = NAN;
+  bool planned = false;  // from the plan, rather than something the owner asked for
   if (!isnan(restoreTemp_)) {
     if (now >= restoreUntil_ || roundf(tick.setTemp) == restoreTemp_) {
       restoreTemp_ = NAN;
@@ -95,6 +96,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
       }
       // Without a water temp there's no plan; heating now is the safe way to still be ready.
       desired = plan_.ok ? setpointFromPlan(now, context) : soak_.target;
+      planned = plan_.ok;
     }
   }
   if (isnan(desired) && autoEnabled_ && !soak_.active && isnan(restoreTemp_)) {
@@ -102,6 +104,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
       replan(tick, context);
     }
     desired = plan_.ok ? setpointFromPlan(now, context) : comfort_;
+    planned = plan_.ok;
   }
   if (isnan(desired)) {
     return NAN;
@@ -113,6 +116,16 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
   }
   if (tick.inUse && desired < tick.setTemp) {
     return NAN;  // never cool the water on someone
+  }
+  if (planned && desired < tick.setTemp && tick.heating) {
+    if (!lowerHeldSince_) {
+      lowerHeldSince_ = now;
+    }
+    if (now - lowerHeldSince_ < LetHeaterFinishSec) {
+      return NAN;  // let this heater run finish rather than cut it short
+    }
+  } else {
+    lowerHeldSince_ = 0;
   }
   if (desired == pendingSet_ && now - pendingAt_ < CommandSettleSec) {
     return NAN;  // sent; waiting for the spa to show it

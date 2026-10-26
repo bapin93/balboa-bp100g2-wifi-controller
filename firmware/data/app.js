@@ -832,7 +832,7 @@ function renderPlanChart() {
   const pad = { left: 30, right: 8, top: 6 };
   const tempHeight = 120;
   const heatTop = pad.top + tempHeight + 22;
-  const heatHeight = 24;
+  const heatHeight = 34;
   const height = heatTop + heatHeight + 20;
   const x = (t) => pad.left + ((t - t0) / (t1 - t0)) * (width - pad.left - pad.right);
   const values = [...water.map((p) => p.v), ...ready.filter((p) => Number.isFinite(p.v)).map((p) => p.v)];
@@ -869,14 +869,24 @@ function renderPlanChart() {
   svgEl("path", { d: linePath(water, x, y, step * 2), fill: "none", stroke: "var(--chart-water)",
     "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
 
-  svgEl("text", { x: pad.left, y: heatTop - 6, class: "panel-label" }, svg).textContent = "HEATER";
-  svgEl("line", { x1: pad.left, x2: width - pad.right, y1: heatTop + heatHeight, y2: heatTop + heatHeight, stroke: "var(--chart-grid)", "stroke-width": 1 }, svg);
+  // Heater as minutes per clock hour, like the history chart. Per step it would show the planner's averages
+  // (holding a temp exactly is a minute of heat every quarter hour), which the spa really does as one
+  // longer run whenever the water drifts a degree under the set temp.
+  const heatByHour = new Map();
   plan.steps.forEach((s, i) => {
-    if (!(s.heat > 0)) return;
-    const h = Math.max(2, s.heat * heatHeight);
-    const left = x(t0 + i * step);
-    svgEl("rect", { x: left, y: heatTop + heatHeight - h, width: Math.max(1, x(t0 + (i + 1) * step) - left - 0.5), height: h,
-      rx: 1, fill: "var(--chart-heater)" }, svg);
+    const hour = Math.floor((t0 + i * step) / 3600) * 3600;
+    heatByHour.set(hour, (heatByHour.get(hour) || 0) + (s.heat || 0) * (step / 60));
+  });
+  svgEl("text", { x: pad.left, y: heatTop - 6, class: "panel-label" }, svg).textContent = "HEATER MIN / HOUR";
+  svgEl("line", { x1: pad.left, x2: width - pad.right, y1: heatTop + heatHeight, y2: heatTop + heatHeight, stroke: "var(--chart-grid)", "stroke-width": 1 }, svg);
+  svgEl("text", { x: pad.left - 6, y: heatTop + 4, "text-anchor": "end" }, svg).textContent = "60";
+  heatByHour.forEach((minutes, hour) => {
+    if (minutes < 0.5) return;
+    const h = Math.max(2, (Math.min(minutes, 60) / 60) * heatHeight);
+    const left = Math.max(pad.left, x(hour)) + 1;
+    const right = Math.min(width - pad.right, x(hour + 3600));
+    svgEl("rect", { x: left, y: heatTop + heatHeight - h, width: Math.max(1, right - left - 1), height: h,
+      rx: 1.5, fill: "var(--chart-heater)" }, svg);
   });
 
   const cursor = svgEl("line", { y1: pad.top, y2: heatTop + heatHeight, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
@@ -892,7 +902,8 @@ function renderPlanChart() {
     cursor.setAttribute("visibility", "visible");
     const rows = [{ value: `${s.temp.toFixed(1)}°F`, label: "Planned", key: "water" }];
     if (Number.isFinite(s.min)) rows.push({ value: `${s.min.toFixed(1)}°F`, label: "Ready line", key: "set dashed" });
-    rows.push({ value: `${Math.round(s.heat * 15)} min`, label: "Heater", key: "heater" });
+    const hourMinutes = heatByHour.get(Math.floor((t0 + i * step) / 3600) * 3600) || 0;
+    rows.push({ value: `${Math.round(hourMinutes)} min`, label: "Heater this hour", key: "heater" });
     if (Number.isFinite(s.price)) rows.push({ value: `$${s.price.toFixed(3)}/kWh`, label: s.price > cheapest ? "Peak" : "Off-peak", key: null });
     showTip(container, tip, epochTimeLabel(t0 + i * step), rows, cx);
   };

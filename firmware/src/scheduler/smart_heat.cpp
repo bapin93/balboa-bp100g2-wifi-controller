@@ -144,6 +144,7 @@ ControllerTick SmartHeat::makeTick(uint32_t now) const {
   tick.setTemp = state.setTemp;
   tick.waterTemp = estimateWaterTemp(now);
   tick.inUse = inUse_;
+  tick.heating = state.heating;
   return tick;
 }
 

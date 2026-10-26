@@ -29,6 +29,7 @@ struct Spa {
   float water = 95;
   uint32_t now = Monday8am;
   bool inUse = false;
+  bool heating = false;
   int commands = 0;
   int heatedMinutes[48] = {};  // [h] covers the hour starting h hours after 8 AM Monday
 
@@ -38,6 +39,7 @@ struct Spa {
     t.setTemp = setTemp;
     t.waterTemp = water;
     t.inUse = inUse;
+    t.heating = heating;
     return t;
   }
 
@@ -50,7 +52,7 @@ struct Spa {
         setTemp = sent;
         ++commands;
       }
-      const bool heating = water < setTemp - 0.5f;
+      heating = water < setTemp - 0.5f;
       if (heating && (now - Monday8am) / Hour < 48) ++heatedMinutes[(now - Monday8am) / Hour];
       water += ((heating ? ctx.heaterRate : 0) - ctx.lossCoeff * (water - 45)) / 60.0f;
       now += 60;
@@ -342,6 +344,26 @@ void test_low_range_stands_aside() {
   TEST_ASSERT_TRUE(spa.commands > before);
 }
 
+void test_lets_a_heater_run_finish() {
+  HeatController controller;
+  Spa spa{controller};
+  spa.ctx = autoContext();
+  spa.setTemp = 102;
+  spa.water = 101;
+  spa.run(60);
+  spa.water = 95;  // well under the set temp it hasn't lowered yet: the heater is mid-run
+  spa.setTemp = 102;
+  spa.heating = true;
+  ControllerTick t = spa.tick();
+  t.now += 60;
+  TEST_ASSERT_TRUE(isnan(controller.tick(t, spa.ctx)));  // waits for the run to finish
+  t.now += HeatController::LetHeaterFinishSec;
+  TEST_ASSERT_TRUE(controller.tick(t, spa.ctx) < 102);  // but not forever
+  t.heating = false;
+  t.now += 60;
+  TEST_ASSERT_TRUE(controller.tick(t, spa.ctx) < 102);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_soak_follows_the_plan_and_restores);
@@ -358,5 +380,6 @@ int main() {
   RUN_TEST(test_turning_auto_off_puts_comfort_back);
   RUN_TEST(test_auto_takes_over_after_a_soak);
   RUN_TEST(test_low_range_stands_aside);
+  RUN_TEST(test_lets_a_heater_run_finish);
   return UNITY_END();
 }
