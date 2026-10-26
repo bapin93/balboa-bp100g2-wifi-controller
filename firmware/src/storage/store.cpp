@@ -183,6 +183,34 @@ bool Store::saveMaintenance(MaintenanceLog &log) {
   return true;
 }
 
+void Store::loadWater(WaterLog &log) {
+  File file = data_->open(AppConfig::WaterPath, "r");
+  if (!file) {
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, file)) {
+    Serial.println("[store] water log parse failed");
+    return;
+  }
+  log.fromJson(doc.as<JsonVariantConst>());
+}
+
+bool Store::saveWater(WaterLog &log) {
+  File file = data_->open(AppConfig::WaterPath, "w");
+  if (!file) {
+    Serial.println("[store] water log open for write failed");
+    return false;
+  }
+  JsonDocument doc;
+  log.toJson(doc.to<JsonObject>());
+  if (serializeJson(doc, file) == 0) {
+    return false;
+  }
+  log.clearDirty();
+  return true;
+}
+
 uint8_t Store::loadWifiFailedBoots() {
   Preferences prefs;
   if (!prefs.begin("wifi", true)) {

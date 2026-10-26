@@ -24,7 +24,11 @@ const state = {
   maintClockOffset: 0,
   maintLoadedAt: 0,
   maintSheet: null,
-  historyExpanded: { task: false, filter: false },
+  maintAlerts: { tasks: false, filters: false, water: false },
+  historyExpanded: { task: false, filter: false, water: false },
+  water: null,
+  waterSheet: null,
+  tempRangePending: null,
 };
 
 const ReminderText = {
@@ -59,6 +63,23 @@ const FaultText = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+// "just now", "40 min ago", "3 h ago"; "" when the time is unknown.
+function ageText(epochSeconds) {
+  if (!epochSeconds) return "";
+  const minutes = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h ago`;
+  return `${Math.round(minutes / 1440)} days ago`;
+}
+
+// The spa reports water temperature only after the pump runs; between readings show the last one, marked.
+function waterReading(data) {
+  if (Number.isFinite(data.waterTemp)) return { temp: data.waterTemp, stale: false, age: "" };
+  if (Number.isFinite(data.lastWaterTemp)) return { temp: data.lastWaterTemp, stale: true, age: ageText(data.lastWaterTempAt) };
+  return { temp: NaN, stale: false, age: "" };
+}
 
 function tempLabel(value) {
   return Number.isFinite(value) ? `${Math.round(value)}°F` : "--";
@@ -147,12 +168,19 @@ function spaMinutes(spaTime) {
 }
 
 function renderOverview(data, caps) {
-  setValue("ovWater", tempLabel(data.waterTemp));
+  const water = waterReading(data);
+  setValue("ovWater", tempLabel(water.temp));
+  $("#ovWater").classList.toggle("stale", water.stale);
+  $("#ovWaterLabel").textContent = water.stale ? "Water · last reading" : "Water";
   setValue("ovSet", tempLabel(data.setTemp));
   const toGo = Math.round((data.setTemp ?? 0) - (data.waterTemp ?? 0));
   const heroStatus = $("#ovHeatStatus");
+  // The spa only knows the water temperature after the pump has run past its sensor.
+  const waterKnown = Number.isFinite(data.waterTemp);
   heroStatus.textContent = !data.valid ? "Waiting for the spa"
     : data.hold ? "Paused for hold"
+    : !waterKnown ? [data.heating ? "Heating" : "", water.stale && water.age ? `last reading ${water.age}` : "no reading yet"]
+      .filter(Boolean).join(" · ").replace(/^./, (c) => c.toUpperCase())
     : data.heating ? `Heating · ${toGo}°F to go`
     : data.heatPending ? "Heat waiting"
     : toGo > 1 ? `${toGo}°F below set point` : "At temperature";
@@ -275,7 +303,10 @@ function field(form, name) {
 
 function renderState(data) {
   state.data = data;
-  $("#waterTemp").textContent = tempLabel(data.waterTemp);
+  const water = waterReading(data);
+  $("#waterTemp").textContent = tempLabel(water.temp);
+  $("#waterTemp").classList.toggle("stale", water.stale);
+  $("#waterLabel").textContent = water.stale ? `water · ${water.age || "earlier"}` : "water";
   $("#setTemp").textContent = tempLabel(data.setTemp);
   $("#heatingRing").classList.toggle("active", !!data.heating);
   $("#heatingRing").classList.toggle("pending", !data.heating && !!data.heatPending);
@@ -286,6 +317,7 @@ function renderState(data) {
   $("#filterStatus").classList.toggle("active", !!data.activeFilterCycle);
   $("#spaClock").textContent = data.valid ? spaClockLabel(data.spaTime) : "--";
   $("#settingsSpaTime").textContent = $("#spaClock").textContent;
+  renderTempRange(data);
   $("#captureState").textContent = data.statusCaptureActive ? "Capturing" : "Stopped";
   $("#captureSummary").textContent = data.statusCaptureActive ? "Capturing" : "For troubleshooting";
   $("#captureCount").textContent = `${data.statusCaptureLines ?? 0} lines`;
@@ -310,6 +342,7 @@ function renderState(data) {
   if (Date.now() - state.maintLoadedAt > maintRefreshMs) {
     state.maintLoadedAt = Date.now();  // throttle; pumped hours only change slowly
     loadMaintenance().catch((error) => console.warn("[bp100g2] maintenance failed", error));
+    loadWater().catch((error) => console.warn("[bp100g2] water log failed", error));
   }
   renderBanners(data);
   if (state.pumpSeq !== null && data.pumpCommand?.seq > state.pumpSeq && !data.pumpCommand.ok) {
@@ -1087,6 +1120,8 @@ function commandPresentation(command) {
       return { title: "Applying Light", details: `Current: ${state.data?.light ? "On" : "Off"}` };
     case "syncTime":
       return { title: "Setting Spa Time", details: "Syncing controller time" };
+    case "tempRange":
+      return { title: "Switching Range", details: command.value === "high" ? "High range" : "Low range" };
     case "startStatusCapture":
       return { title: "Starting Capture", details: "Recording status frames" };
     case "stopStatusCapture":
@@ -1277,7 +1312,11 @@ function connectWs() {
 
 async function loadConfig() {
   const message = await requestJson("/api/config");
-  state.config = message.data;
+  applyConfig(message.data);
+}
+
+function applyConfig(config) {
+  state.config = config;
   const form = $("#settingsForm");
   field(form, "timezone").value = state.config.timezone || "";
   syncTimezonePreset();
@@ -1290,8 +1329,12 @@ async function loadConfig() {
   field(form, "showJet2").checked = !caps.hideJet2;
   field(form, "latitude").value = state.config.location ? state.config.location.lat : "";
   field(form, "longitude").value = state.config.location ? state.config.location.lon : "";
-  // Runtime may have loaded before the location was known (e.g. a refresh on that tab); catch the
-  // outside temperature up now. loadWeather is cached per location, so this is free when it's current.
+  refreshWeatherForLocation();
+}
+
+// Runtime may have loaded before the location was known (e.g. a refresh on that tab); catch the
+// outside temperature up now. loadWeather is cached per location, so this is free when it's current.
+function refreshWeatherForLocation() {
   if (state.runtimeDays) {
     loadWeather()
       .then(renderRuntime)
@@ -1330,6 +1373,7 @@ function showView(id) {
   if (activeSubtab) onSubtabShown(activeSubtab.dataset.subtab);
   if (id === "maintenance") {
     loadMaintenance().catch((error) => showToast(error.message));
+    loadWater().catch((error) => showToast(error.message));
   }
 }
 
@@ -1475,7 +1519,8 @@ function renderMaintenance() {
   renderTasks(tasks);
   const tasksOverdue = tasks.some((task) => taskStatus(task).rank === 0);
   const filtersDue = filters.some((filter) => filter.inTub && filterCleanDue(filter));
-  $('.nav-btn[data-view="maintenance"]').classList.toggle("has-alert", tasksOverdue || filtersDue);
+  Object.assign(state.maintAlerts, { tasks: tasksOverdue, filters: filtersDue });
+  updateMaintNavAlert();
   $('.subtab[data-subtab="maintTasks"]').classList.toggle("has-alert", tasksOverdue);
   $('.subtab[data-subtab="maintFilters"]').classList.toggle("has-alert", filtersDue);
   const inTub = filters.filter((filter) => filter.inTub);
@@ -1528,8 +1573,15 @@ function renderMaintenance() {
   renderHistory(allEvents.filter((event) => event.type !== "done"), "filter");
 }
 
-// Month-grouped history list; `kind` picks the list ("task" or "filter") and its Show all toggle.
-function renderHistory(events, kind) {
+function updateMaintNavAlert() {
+  const alert = Object.values(state.maintAlerts).some(Boolean);
+  $('.nav-btn[data-view="maintenance"]').classList.toggle("has-alert", alert);
+}
+
+// Month-grouped history list; `kind` picks the list ("task", "filter" or "water") and its Show all
+// toggle. `text` describes an event; events `selectable` accepts can be tapped to call `onSelect`.
+function renderHistory(events, kind, { text = (event) => (EventText[event.type] || EventText.added)(event.name),
+  selectable = () => false, onSelect = null } = {}) {
   // Newest first by the date it happened, which can differ from the order it was recorded in.
   const sorted = events
     .map((event, index) => ({ ...event, index }))
@@ -1550,7 +1602,11 @@ function renderHistory(events, kind) {
       items.push(heading);
     }
     const item = document.createElement("li");
-    item.textContent = (EventText[event.type] || EventText.added)(event.name);
+    item.textContent = text(event);
+    if (selectable(event)) {
+      item.className = "tappable";
+      item.addEventListener("click", () => onSelect(event));
+    }
     const meta = document.createElement("span");
     meta.className = "fault-meta";
     meta.textContent = dateText(event.ts, true);
@@ -1688,6 +1744,382 @@ function setupMaintenance() {
     }
     const sheet = state.maintSheet;
     submitMaintenance(sheet.task ? { action: "deleteTask", id: sheet.task.id } : { action: "delete", id: sheet.filter.id });
+  });
+}
+
+// ── water care ──
+
+const SanitizerTargets = {
+  frog: { name: "Free Chlorine", short: "Cl", ok: [0.5, 1], near: [0.25, 3] },
+  chlorine: { name: "Free Chlorine", short: "Cl", ok: [3, 5], near: [1, 8] },
+  bromine: { name: "Bromine", short: "Br", ok: [3, 5], near: [2, 8] },
+};
+
+const PadTargets = {
+  ph: { name: "pH", short: "pH", unit: "", ok: [7.2, 7.8], near: [7, 8] },
+  ta: { name: "Alkalinity", short: "TA", unit: " ppm", ok: [80, 120], near: [60, 180] },
+  th: { name: "Hardness", short: "TH", unit: " ppm", ok: [100, 250], near: [50, 400] },
+};
+
+const CartridgeNames = { sanitizer: "SmartChlor", mineral: "Mineral" };
+const DefaultChemicals = ["pH Up", "pH Down", "Alkalinity Up", "Alkalinity Down", "Shock (non-chlorine)",
+  "Chlorine shock", "Chlorine", "Bromine", "FROG Jump Start", "Calcium Increaser", "Defoamer"];
+const TestStaleDays = 7;
+
+function dialText(dial) {
+  return dial === 0 ? "0 (closed)" : String(dial);
+}
+
+function waterSystem() {
+  return state.water?.system || "frog";
+}
+
+function padTargets() {
+  return { san: { ...SanitizerTargets[waterSystem()], unit: " ppm" }, ...PadTargets };
+}
+
+function numberText(value) {
+  return String(Math.round(value * 100) / 100);
+}
+
+// pH always reads with one decimal, like the strip's color chart.
+function padText(key, value) {
+  return key === "ph" ? value.toFixed(1) : numberText(value);
+}
+
+function rangeText([low, high]) {
+  return `${numberText(low)}–${numberText(high)}`;
+}
+
+// "ok" inside the target, "near" just outside it, "far" beyond; with which way it's off.
+function padStatus(value, target) {
+  const dir = value < target.ok[0] ? "low" : value > target.ok[1] ? "high" : null;
+  if (!dir) return { level: "ok", dir };
+  const near = value >= target.near[0] && value <= target.near[1];
+  return { level: near ? "near" : "far", dir };
+}
+
+async function loadWater() {
+  setWater(await requestJson("/api/water"));
+}
+
+function setWater(data) {
+  state.water = data;
+  state.maintClockOffset = (data.now || Date.now() / 1000) - Date.now() / 1000;
+  renderWater();
+}
+
+function readings() {
+  return (state.water?.entries || []).filter((entry) => entry.type === "reading").sort((a, b) => a.ts - b.ts);
+}
+
+// Most recent value of each pad; hardness is often read less often than the rest.
+function latestPads() {
+  const pads = {};
+  readings().forEach((entry) => {
+    Object.keys(PadTargets).concat("san").forEach((key) => {
+      if (Number.isFinite(entry[key])) pads[key] = { value: entry[key], ts: entry.ts };
+    });
+  });
+  return pads;
+}
+
+function waterAdvice(pads) {
+  const targets = padTargets();
+  const off = (key) => (pads[key] ? padStatus(pads[key].value, targets[key]).dir : null);
+  const frog = waterSystem() === "frog";
+  const sanName = targets.san.name.toLowerCase();
+  const tips = [];
+  if (off("ta") === "low") tips.push("Alkalinity is low. Raise it with Alkalinity Up first; it holds pH steady.");
+  if (off("ta") === "high") tips.push("Alkalinity is high. Lower it with pH Down a little at a time, then retest.");
+  if (!off("ta")) {
+    if (off("ph") === "low") tips.push("pH is low: add pH Up.");
+    if (off("ph") === "high") tips.push("pH is high: add pH Down.");
+  } else if (off("ph")) {
+    tips.push("Fix alkalinity before chasing pH.");
+  }
+  if (off("san") === "low") {
+    tips.push(frog ? "Chlorine is low: turn the SmartChlor dial up one, or replace the cartridge if it's empty."
+      : `${targets.san.name} is low: add ${sanName} or shock.`);
+  }
+  if (off("san") === "high") {
+    tips.push(frog ? "Chlorine is high: turn the SmartChlor dial down one."
+      : `${targets.san.name} is high: let it drop before soaking.`);
+  }
+  if (off("th") === "low") tips.push("Hardness is low; soft water can foam and corrode. Calcium Increaser raises it.");
+  if (off("th") === "high") tips.push("Hardness is high and can scale the heater. A drain and refill brings it down.");
+  return tips;
+}
+
+function renderLatestTest(pads) {
+  const card = $("#latestTest");
+  const targets = padTargets();
+  const latest = readings().at(-1);
+  const head = document.createElement("div");
+  head.className = "maint-card-head";
+  const title = document.createElement("strong");
+  title.textContent = latest ? `Tested ${dateText(latest.ts)}` : "No tests yet";
+  head.append(title);
+  if (latest) {
+    const age = controllerNow() - latest.ts;
+    const badge = document.createElement("span");
+    const stale = age > TestStaleDays * 86400;
+    badge.className = `badge${stale ? " warn" : ""}`;
+    badge.textContent = age < 86400 ? "Today" : daysText(age) + " ago";
+    head.append(badge);
+  }
+  const rows = ["san", "ph", "ta", "th"].filter((key) => pads[key]).map((key) => {
+    const target = targets[key];
+    const { value, ts } = pads[key];
+    const status = padStatus(value, target);
+    const label = `${target.name} · ${rangeText(target.ok)}`;
+    const word = status.dir ? ` · ${status.dir === "low" ? "Low" : "High"}` : "";
+    const older = ts !== latest.ts ? ` (${dateText(ts)})` : "";
+    const className = status.level === "far" ? "bad" : status.level === "near" ? "due" : "";
+    return maintRow(label, `${padText(key, value)}${target.unit}${word}${older}`, className);
+  });
+  if (!latest) {
+    rows.push(maintRow("Dip a strip and log what it reads.", "", "muted"));
+  }
+  const actions = document.createElement("div");
+  actions.className = "maint-actions";
+  actions.append(maintButton("Log Test", () => openWaterSheet({ action: "reading" }), "accent"));
+  actions.append(maintButton("Add Chemical", () => openWaterSheet({ action: "dose" })));
+  card.replaceChildren(head, ...rows, actions);
+
+  const tips = waterAdvice(pads).map((tip) => {
+    const item = document.createElement("li");
+    item.textContent = tip;
+    return item;
+  });
+  $("#waterAdvice").replaceChildren(...tips);
+}
+
+function cartridgeStatus(cartridge) {
+  return taskStatus({ lastDone: cartridge.installedAt, intervalDays: cartridge.lifeDays });
+}
+
+function renderCartridges() {
+  const cartridges = state.water?.cartridges || {};
+  const cards = Object.entries(CartridgeNames).map(([slot, name]) => {
+    const cartridge = cartridges[slot] || {};
+    const installed = !!cartridge.installedAt;
+    const card = document.createElement("div");
+    card.className = `maint-card${installed ? " in-tub" : ""}`;
+    const head = document.createElement("div");
+    head.className = "maint-card-head";
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const badge = document.createElement("span");
+    badge.className = `badge${installed ? " in" : ""}`;
+    badge.textContent = installed ? "In tub" : "Not recorded";
+    head.append(title, badge);
+    card.append(head);
+
+    const actions = document.createElement("div");
+    actions.className = "maint-actions";
+    if (installed) {
+      const status = cartridgeStatus(cartridge);
+      card.append(maintRow("Age", `${daysText(controllerNow() - cartridge.installedAt)} · ${pumpedText(cartridge.pumpSec)} pumped`));
+      card.append(maintRow(`Replace · every ${cartridge.lifeDays} days`, status.text,
+        status.rank === 0 ? "due" : status.rank === 1 ? "" : "muted"));
+      if (slot === "sanitizer") {
+        const known = Number.isFinite(cartridge.dial);
+        card.append(maintRow("Dial", known ? dialText(cartridge.dial) : "Not set", known ? "" : "muted"));
+      }
+      actions.append(maintButton("Replaced", () => openWaterSheet({ action: "replace", slot }), "accent"));
+      if (slot === "sanitizer") actions.append(maintButton("Dial", () => openWaterSheet({ action: "dial", slot })));
+    } else {
+      card.append(maintRow("Record when it went in to track its life", "", "muted"));
+      actions.append(maintButton("Put In", () => openWaterSheet({ action: "replace", slot }), "accent"));
+    }
+    actions.append(maintButton("Edit", () => openWaterSheet({ action: "life", slot }), "narrow"));
+    card.append(actions);
+    return card;
+  });
+  $("#cartridgeCards").replaceChildren(...cards);
+}
+
+function waterEntryText(entry) {
+  const note = entry.note ? ` — ${entry.note}` : "";
+  switch (entry.type) {
+    case "reading": {
+      const targets = padTargets();
+      const pads = ["san", "ph", "ta", "th"].filter((key) => Number.isFinite(entry[key]))
+        .map((key) => `${targets[key].short} ${padText(key, entry[key])}`);
+      return `Test · ${pads.join(" · ")}${note}`;
+    }
+    case "dose":
+      return `${entry.chem} · ${numberText(entry.amount)} ${entry.unit}${note}`;
+    case "cartridge":
+      return entry.slot === "mineral" ? "Mineral cartridge replaced"
+        : `SmartChlor replaced${Number.isFinite(entry.dial) ? ` · dial ${dialText(entry.dial)}` : ""}`;
+    case "dial":
+      return `SmartChlor dial set to ${dialText(entry.dial)}`;
+    default:
+      return "";
+  }
+}
+
+function renderWater() {
+  const data = state.water;
+  if (!data) return;
+  const frog = waterSystem() === "frog";
+  $("#waterSystem").value = waterSystem();
+  $("#cartridgeSection").hidden = !frog;
+  renderLatestTest(latestPads());
+  if (frog) renderCartridges();
+
+  const cartridgeDue = frog && Object.values(data.cartridges || {})
+    .some((cartridge) => cartridge.installedAt && cartridgeStatus(cartridge).rank === 0);
+  state.maintAlerts.water = cartridgeDue;
+  updateMaintNavAlert();
+  $('.subtab[data-subtab="maintWater"]').classList.toggle("has-alert", cartridgeDue);
+
+  const targets = padTargets();
+  $("#waterTargets").textContent = `Targets: ${["san", "ph", "ta", "th"]
+    .map((key) => `${targets[key].name} ${rangeText(targets[key].ok)}${targets[key].unit}`)
+    .join(" · ")}.${frog ? " FROG @ease runs low chlorine; the SmartChlor dial sets how much." : ""}`;
+
+  renderHistory(data.entries || [], "water", {
+    text: waterEntryText,
+    selectable: (entry) => entry.type === "reading" || entry.type === "dose",
+    onSelect: (entry) => openWaterSheet({ action: "entry", entry }),
+  });
+
+  const chemicals = new Set(DefaultChemicals);
+  (data.entries || []).filter((entry) => entry.type === "dose").forEach((entry) => chemicals.add(entry.chem));
+  $("#chemicalList").replaceChildren(...[...chemicals].map((chem) => {
+    const option = document.createElement("option");
+    option.value = chem;
+    return option;
+  }));
+}
+
+function openWaterSheet(sheet) {
+  state.waterSheet = sheet;
+  const { action, slot, entry } = sheet;
+  const cartridge = state.water?.cartridges?.[slot] || {};
+  const name = CartridgeNames[slot];
+  const titles = {
+    reading: "Log Test",
+    dose: "Add Chemical",
+    replace: cartridge.installedAt ? `Replace ${name}` : `Put In ${name}`,
+    dial: "SmartChlor Dial",
+    life: `${name} Cartridge`,
+    entry: entry ? waterEntryText({ ...entry, note: "" }) : "",
+  };
+  const texts = {
+    reading: "Leave a pad blank if you didn't read it.",
+    replace: "Day and pumped counts start over.",
+    entry: entry ? `${dateText(entry.ts, true)}${entry.note ? ` · ${entry.note}` : ""}` : "",
+  };
+  $("#waterSheetTitle").textContent = titles[action];
+  $("#waterSheetText").textContent = texts[action] || "";
+  $$("#waterFields .form-row").forEach((row) => {
+    row.hidden = !row.dataset.for.split(" ").includes(action) ||
+      (row.contains($("#wDial")) && action === "replace" && slot !== "sanitizer");
+  });
+  $("#waterFields").hidden = action === "entry";
+  $("#wSanLabel").textContent = SanitizerTargets[waterSystem()].name;
+  ["wSan", "wPh", "wTa", "wTh", "wChem", "wAmount", "wNote"].forEach((id) => { $(`#${id}`).value = ""; });
+  $("#wAmount").placeholder = "";
+  $("#wDial").value = String(state.water?.cartridges?.sanitizer?.dial ?? 3);
+  $("#wLife").value = cartridge.lifeDays || 30;
+  $("#wDate").value = localDateTimeValue(new Date());
+  $("#wDate").max = localDateTimeValue(new Date());
+  $("#waterDelete").hidden = action !== "entry";
+  delete $("#waterDelete").dataset.armed;
+  $("#waterDelete").textContent = "Delete Entry";
+  $("#waterConfirm").hidden = action === "entry";
+  $("#waterConfirm").textContent = action === "reading" || action === "dose" ? "Add" : "Save";
+  $("#waterCancel").textContent = action === "entry" ? "Close" : "Cancel";
+  $("#waterSheet").classList.remove("hidden");
+}
+
+function closeWaterSheet() {
+  state.waterSheet = null;
+  $("#waterSheet").classList.add("hidden");
+}
+
+async function submitWater(body) {
+  try {
+    setWater(await requestJson("/api/water", { method: "POST", body: JSON.stringify(body) }));
+    closeWaterSheet();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+// The last amount and unit used for a chemical, so a repeat dose is quick to log.
+function suggestDose() {
+  const chem = $("#wChem").value.trim().toLowerCase();
+  const last = (state.water?.entries || []).filter((entry) => entry.type === "dose" && entry.chem.toLowerCase() === chem).at(-1);
+  if (!last) return;
+  $("#wUnit").value = last.unit;
+  $("#wAmount").placeholder = numberText(last.amount);
+}
+
+function confirmWaterSheet() {
+  const sheet = state.waterSheet;
+  if (!sheet) return;
+  const ts = Math.floor(new Date($("#wDate").value).getTime() / 1000);
+  if (["reading", "dose", "replace", "dial"].includes(sheet.action) && !Number.isFinite(ts)) {
+    showToast("Pick a date and time");
+    return;
+  }
+  const number = (id) => ($(`#${id}`).value.trim() === "" ? null : Number($(`#${id}`).value));
+  const note = $("#wNote").value.trim();
+  switch (sheet.action) {
+    case "reading": {
+      const pads = { san: number("wSan"), ph: number("wPh"), ta: number("wTa"), th: number("wTh") };
+      Object.keys(pads).forEach((key) => { if (!Number.isFinite(pads[key])) delete pads[key]; });
+      if (!Object.keys(pads).length) {
+        showToast("Enter at least one reading");
+        return;
+      }
+      submitWater({ action: "reading", ts, ...pads, note });
+      break;
+    }
+    case "dose": {
+      const amount = number("wAmount") ?? (Number($("#wAmount").placeholder) || null);
+      submitWater({ action: "dose", ts, chem: $("#wChem").value.trim(), amount, unit: $("#wUnit").value, note });
+      break;
+    }
+    case "replace":
+      submitWater({ action: "replace", slot: sheet.slot, ts, ...(sheet.slot === "sanitizer" ? { dial: Number($("#wDial").value) } : {}) });
+      break;
+    case "dial":
+      submitWater({ action: "dial", ts, dial: Number($("#wDial").value) });
+      break;
+    case "life":
+      submitWater({ action: "life", slot: sheet.slot, days: Number($("#wLife").value) });
+      break;
+    default:
+      break;
+  }
+}
+
+function setupWater() {
+  $("#waterHistoryToggle").addEventListener("click", () => {
+    state.historyExpanded.water = !state.historyExpanded.water;
+    renderWater();
+  });
+  $("#waterSystem").addEventListener("change", (event) => submitWater({ action: "system", system: event.target.value }));
+  $("#wChem").addEventListener("change", suggestDose);
+  $("#waterCancel").addEventListener("click", closeWaterSheet);
+  $("#waterConfirm").addEventListener("click", confirmWaterSheet);
+  $("#waterSheet").addEventListener("click", (event) => {
+    if (event.target.id === "waterSheet") closeWaterSheet();
+  });
+  $("#waterDelete").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    if (!button.dataset.armed) {
+      button.dataset.armed = "1";  // second tap deletes, so a stray tap can't
+      button.textContent = "Tap again to delete";
+      return;
+    }
+    submitWater({ action: "delete", id: state.waterSheet.entry.id });
   });
 }
 
@@ -1836,6 +2268,108 @@ function saveFilterSheet() {
   sendCommand({ action: `setFilter${n}`, ...(n === 2 ? { enabled: true } : {}), ...values });
 }
 
+const TempRangeSettleMs = 5000;
+
+function renderTempRange(data) {
+  const current = data.tempRangeHigh ? "high" : "low";
+  // Until the spa reports the switch, keep showing the choice instead of flicking back.
+  const pending = state.tempRangePending;
+  if (pending && pending.value !== current && Date.now() < pending.until) return;
+  state.tempRangePending = null;
+  $("#tempRange").value = current;
+  const range = data.setTempRange;
+  $("#tempRangeHint").textContent = `${data.tempRangeHigh ? "High" : "Low"} allows ${range ? `${range.min}–${range.max}°F` : "its own limits"}` +
+    `, set to ${tempLabel(data.setTemp)}. Each range keeps its own set temperature; use Low to save energy while the tub sits unused.`;
+}
+
+function setupTempRange() {
+  $("#tempRange").addEventListener("change", async (event) => {
+    const value = event.target.value;
+    state.tempRangePending = { value, until: Date.now() + TempRangeSettleMs };
+    const result = await sendCommand({ action: "tempRange", value });
+    if (!result) {
+      state.tempRangePending = null;
+      if (state.data) renderTempRange(state.data);
+    }
+  });
+}
+
+// ── settings auto-save ──
+
+// Sends only the changed fields; the controller keeps everything else as it was.
+async function saveConfig(changes, savedText = "Saved") {
+  try {
+    const message = await requestJson("/api/config", { method: "POST", body: JSON.stringify(changes) });
+    state.config = message.data;
+    showToast(savedText);
+    return true;
+  } catch (error) {
+    showToast(error.message);
+    return false;
+  }
+}
+
+// Saves once both fields hold numbers, or clears the location when both are blank. A half-typed
+// pair waits for the other field.
+async function saveLocation() {
+  const form = $("#settingsForm");
+  const lat = field(form, "latitude").value.trim();
+  const lon = field(form, "longitude").value.trim();
+  if ((lat === "") !== (lon === "")) return;
+  if (lat && (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon)))) {
+    showToast("Enter latitude and longitude as numbers");
+    return;
+  }
+  const saved = await saveConfig({ location: lat ? { lat: Number(lat), lon: Number(lon) } : {} },
+    lat ? "Location saved" : "Location cleared");
+  if (saved) refreshWeatherForLocation();
+}
+
+async function savePassword() {
+  const form = $("#settingsForm");
+  const password = field(form, "authPassword").value;
+  if (!password) {
+    showToast("Type a password first");
+    return;
+  }
+  if (await saveConfig({ authPassword: password, authEnabled: true }, "Password set")) {
+    field(form, "authPassword").value = "";
+  }
+}
+
+function setupAutoSaveSettings() {
+  const form = $("#settingsForm");
+  $("#timezonePreset").addEventListener("change", (event) => {
+    if (event.target.value !== "custom") saveConfig({ timezone: event.target.value }, "Timezone saved");
+  });
+  field(form, "timezone").addEventListener("change", (event) => {
+    const rule = event.target.value.trim();
+    if (rule) saveConfig({ timezone: rule }, "Timezone saved");
+  });
+  field(form, "setTime").addEventListener("change", (event) => {
+    saveConfig({ capabilities: { setTime: event.target.checked } });
+  });
+  field(form, "showJet2").addEventListener("change", (event) => {
+    saveConfig({ capabilities: { hideJet2: !event.target.checked } });
+  });
+  ["latitude", "longitude"].forEach((name) => field(form, name).addEventListener("change", saveLocation));
+  field(form, "authEnabled").addEventListener("change", (event) => {
+    // Turning protection on needs a password; until one is set it only opens the password row.
+    if (!event.target.checked) {
+      saveConfig({ authEnabled: false }, "Password turned off");
+    } else if (state.config?.authPasswordSet) {
+      saveConfig({ authEnabled: true }, "Password turned on");
+    } else {
+      showToast("Set a password to turn this on");
+      field(form, "authPassword").focus();
+    }
+  });
+  $("#setPassword").addEventListener("click", savePassword);
+  field(form, "authPassword").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") savePassword();
+  });
+}
+
 function setupLocationSettings() {
   const available = "geolocation" in navigator && window.isSecureContext;
   $("#useLocationRow").hidden = !available;
@@ -1845,7 +2379,7 @@ function setupLocationSettings() {
         const form = $("#settingsForm");
         field(form, "latitude").value = position.coords.latitude.toFixed(2);
         field(form, "longitude").value = position.coords.longitude.toFixed(2);
-        showToast("Location filled in; tap Save Settings");
+        saveLocation();
       },
       () => showToast("Couldn't get this device's location"),
       { timeout: 10000 },
@@ -1921,6 +2455,7 @@ function setupEvents() {
 
   setupJetButtons();
   setupMaintenance();
+  setupWater();
 
   $$(".subtab").forEach((tab) => tab.addEventListener("click", () => showSubtab(tab.dataset.subtab)));
   $$(".view").forEach((view) => {
@@ -1995,47 +2530,16 @@ function setupEvents() {
 
   setupFilterSettings();
   setupLocationSettings();
+  setupTempRange();
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(renderRuntime, 150);
   });
 
-  $("#settingsForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const submit = form.querySelector("button[type='submit']");
-    showToast("Saving settings...");
-    submit.disabled = true;
-    const lat = field(form, "latitude").value.trim();
-    const lon = field(form, "longitude").value.trim();
-    if ((lat === "") !== (lon === "") || (lat && (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))))) {
-      showToast("Enter both latitude and longitude as numbers, or leave both blank");
-      return;
-    }
-    const body = {
-      location: lat ? { lat: Number(lat), lon: Number(lon) } : {},
-      timezone: field(form, "timezone").value.trim(),
-      authEnabled: field(form, "authEnabled").checked,
-      capabilities: {
-        setTime: field(form, "setTime").checked,
-        hideJet2: !field(form, "showJet2").checked,
-      },
-    };
-    if (field(form, "authPassword").value) {
-      body.authPassword = field(form, "authPassword").value;
-    }
-    try {
-      await requestJson("/api/config", { method: "POST", body: JSON.stringify(body) });
-      field(form, "authPassword").value = "";
-      showToast("Settings saved");
-      await loadConfig();
-    } catch (error) {
-      showToast(error.message);
-    } finally {
-      submit.disabled = false;
-    }
-  });
+  setupAutoSaveSettings();
+  // Every setting saves on its own; Enter in a field must not submit the form.
+  $("#settingsForm").addEventListener("submit", (event) => event.preventDefault());
 }
 
 setupEvents();

@@ -135,6 +135,13 @@ bool SpaController::hasFreshState() const {
   return state_.valid && millis() - state_.lastUpdateMs <= StateFreshMs;
 }
 
+void SpaController::seedLastWaterTemp(float temp, uint32_t takenAt) {
+  if (isnan(lastWaterTemp_) && isFiniteTemp(temp)) {
+    lastWaterTemp_ = temp;
+    lastWaterTempAt_ = takenAt;
+  }
+}
+
 void SpaController::setUserCapabilities(bool setTime, bool hideJet2) {
   capabilities_.setTime = setTime;
   hideJet2_ = hideJet2;
@@ -188,6 +195,10 @@ void SpaController::writeStateJson(JsonObject out) const {
     out["setTemp"] = nullptr;
   } else {
     out["setTemp"] = state_.setTemp;
+  }
+  if (!isnan(lastWaterTemp_)) {
+    out["lastWaterTemp"] = lastWaterTemp_;
+    out["lastWaterTempAt"] = lastWaterTempAt_;
   }
   out["jet1"] = state_.jet1;
   out["jet2"] = state_.jet2;
@@ -535,6 +546,18 @@ CommandResult SpaController::handleCommand(JsonVariantConst command) {
     return enqueueToggle("hold_toggle", ToggleHold);
   }
 
+  if (strcmp(action, "tempRange") == 0) {
+    const char *value = command["value"] | "";
+    if (strcmp(value, "high") != 0 && strcmp(value, "low") != 0) {
+      return {CommandStatus::InvalidValue, "range must be high or low"};
+    }
+    const bool high = strcmp(value, "high") == 0;
+    if (high == state_.tempRangeHigh) {
+      return {CommandStatus::Accepted, high ? "already in high range" : "already in low range"};
+    }
+    return enqueueToggle("temp_range_toggle", ToggleTempRange);
+  }
+
   if (strcmp(action, "clearReminder") == 0) {
     return enqueueToggle("clear_notification", ToggleClearNotification);
   }
@@ -807,6 +830,11 @@ CommandResult SpaController::handleBenchCommand(const char *action, JsonVariantC
     stateChanged_ = true;
     return {CommandStatus::Accepted, "bench hold updated"};
   }
+  if (strcmp(action, "tempRange") == 0) {
+    state_.tempRangeHigh = strcmp(command["value"] | "", "low") != 0;
+    stateChanged_ = true;
+    return {CommandStatus::Accepted, "bench range updated"};
+  }
   if (strcmp(action, "clearReminder") == 0) {
     state_.reminder = 0;
     stateChanged_ = true;
@@ -1026,6 +1054,11 @@ void SpaController::applyStatus(const StatusUpdate &status) {
   state_.tempRangeHigh = status.tempRangeHigh;
   state_.priming = status.initMode == 0x01;
   state_.waterTemp = status.waterTemp;
+  if (isFiniteTemp(status.waterTemp)) {
+    const time_t now = time(nullptr);
+    lastWaterTemp_ = status.waterTemp;
+    lastWaterTempAt_ = now > 1700000000 ? static_cast<uint32_t>(now) : 0;
+  }
   state_.setTemp = status.setTemp;
   state_.heating = status.heating;
   state_.heatPending = status.heatWaiting;

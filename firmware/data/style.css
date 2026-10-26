@@ -646,6 +646,23 @@ h1 {
 
 .task-list .maint-empty { border: none; }
 
+.badge.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-dim); }
+.form-row-value.bad { color: var(--danger); }
+.row-sub { color: var(--muted); font-size: 12px; }
+
+.water-advice {
+  list-style: none;
+  margin: 10px 4px 0;
+  color: var(--warn);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.water-advice li + li { margin-top: 4px; }
+.fault-list li.tappable { cursor: pointer; }
+.fault-list li.tappable:active { opacity: 0.65; }
+#cartridgeSection[hidden], .card-form[hidden] { display: none; }
+
 .nav-btn { position: relative; }
 .subtab { position: relative; }
 
@@ -803,6 +820,8 @@ h1 {
 }
 
 .hero-value.dim { color: var(--muted); }
+.hero-value.stale { opacity: 0.55; }
+.orb-water.stale { opacity: 0.6; }
 
 .hero-arrow {
   color: var(--muted);
@@ -1049,6 +1068,9 @@ h1 {
   text-align: center;
 }
 
+/* Room for three digits plus the desktop spin arrows. */
+input[type="number"].form-row-input { width: 92px; }
+
 select.form-row-input {
   appearance: none;
   -webkit-appearance: none;
@@ -1132,23 +1154,6 @@ select.form-row-input.wide { text-align: left; text-align-last: left; }
   transform: translateX(20px);
   background: var(--accent);
 }
-
-.save-btn {
-  width: 100%;
-  background: var(--accent);
-  border: none;
-  border-radius: 14px;
-  color: #0a0f1e;
-  min-height: 52px;
-  font-size: 16px;
-  font-weight: 700;
-  cursor: pointer;
-  margin-top: 20px;
-  transition: opacity 0.15s;
-}
-
-.save-btn:active { opacity: 0.8; }
-.save-btn:disabled { opacity: 0.45; }
 
 /* ── modal ── */
 .modal-overlay {

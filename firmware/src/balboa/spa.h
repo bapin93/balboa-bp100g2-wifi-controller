@@ -77,6 +77,9 @@ class SpaController {
   const SpaState &state() const { return state_; }
   bool hasFreshState() const;
   void setUserCapabilities(bool setTime, bool hideJet2);
+  // The spa only reports water temperature after the pump runs past its sensor (every 30-120 min with M8),
+  // so the last real reading is kept to show between readings. Seeded from saved history at boot.
+  void seedLastWaterTemp(float temp, uint32_t takenAt);
   void setConfiguredFilterCycles(uint8_t cycle1Start, uint8_t cycle1StartMinute, uint8_t cycle1Duration,
                                  uint8_t cycle1DurationMinute, bool cycle2Enabled,
                                  uint8_t cycle2Start, uint8_t cycle2StartMinute, uint8_t cycle2Duration,
@@ -165,6 +168,8 @@ class SpaController {
   SpaCapabilities capabilities_;
   std::optional<DeviceConfiguration> equipment_;
   bool hideJet2_ = false;
+  float lastWaterTemp_ = NAN;
+  uint32_t lastWaterTempAt_ = 0;  // Unix time, 0 if the clock wasn't set
   std::optional<SystemInformation> systemInfo_;
   std::optional<SetupParameters> setupParams_;
   uint32_t spaInfoSeq_ = 0;

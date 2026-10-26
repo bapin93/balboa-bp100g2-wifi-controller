@@ -30,6 +30,7 @@ curl -X POST localhost:8090/mock -d '{"reminder": 10}'      # check pH banner
 curl -X POST localhost:8090/mock -d '{"hold": true, "holdMinutes": 5}'
 curl -X POST localhost:8090/mock -d '{"pumps": "2,1"}'      # add a single-speed Jet 2
 curl -X POST localhost:8090/mock -d '{"waterTemp": 80}'
+curl -X POST localhost:8090/mock -d '{"waterTemp": null, "lastWaterTempAgeMin": 40}'  # spa between readings
 ```
 
 The mock mirrors the JSON in `src/balboa/spa.cpp`; update both when the API changes. When the app looks

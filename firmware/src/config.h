@@ -20,6 +20,7 @@ constexpr const char *Hostname = "bp100g2-controller";
 constexpr const char *DataPartitionLabel = "userdata";
 constexpr const char *ConfigPath = "/config.json";
 constexpr const char *RuntimePath = "/runtime.json";
+constexpr const char *WaterPath = "/water.json";
 constexpr uint32_t RuntimeSaveIntervalMs = 15UL * 60UL * 1000UL;
 constexpr size_t MaxCommandQueue = 8;
 constexpr uint32_t StateBroadcastMinMs = 250;

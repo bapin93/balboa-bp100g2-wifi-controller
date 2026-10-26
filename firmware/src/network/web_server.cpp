@@ -67,8 +67,8 @@ bool sameFilterCycles(const DeviceConfig &a, const DeviceConfig &b) {
 }  // namespace
 
 WebServerHub::WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config,
-                           const RuntimeLog &runtime, MaintenanceLog &maintenance)
-    : spa_(spa), store_(store), config_(config), runtime_(runtime), maintenance_(maintenance) {}
+                           const RuntimeLog &runtime, MaintenanceLog &maintenance, WaterLog &water)
+    : spa_(spa), store_(store), config_(config), runtime_(runtime), maintenance_(maintenance), water_(water) {}
 
 void WebServerHub::begin() {
   applyCapabilitiesToSpa();
@@ -243,6 +243,19 @@ void WebServerHub::setupRoutes() {
         }
       });
 
+  server_.on("/api/water", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) { writeWaterJson(out); });
+  });
+  server_.on(
+      "/api/water", HTTP_POST,
+      [](AsyncWebServerRequest *request) {},
+      nullptr,
+      [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        if (index == 0 && len == total) {
+          handleWaterBody(request, data, len);
+        }
+      });
+
   server_.on("/api/config", HTTP_GET, [this](AsyncWebServerRequest *request) { sendConfig(request); });
 
   server_.on(
@@ -368,16 +381,75 @@ void WebServerHub::handleMaintenanceBody(AsyncWebServerRequest *request, uint8_t
     }
   }
   if (error) {
-    JsonDocument out;
-    out["status"] = "invalid_value";
-    out["message"] = error;
-    String body;
-    serializeJson(out, body);
-    request->send(400, "application/json", body);
+    sendInvalid(request, error);
     return;
   }
   store_.saveMaintenance(maintenance_);
   sendJson(request, [this](JsonObject out) { writeMaintenanceJson(out); });
+}
+
+void WebServerHub::writeWaterJson(JsonObject out) {
+  water_.toJson(out);
+  out["now"] = static_cast<uint32_t>(time(nullptr));
+}
+
+void WebServerHub::handleWaterBody(AsyncWebServerRequest *request, uint8_t *data, size_t len) {
+  if (!isAuthorized(request)) {
+    return request->requestAuthentication();
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len)) {
+    request->send(400, "application/json", "{\"status\":\"invalid_value\",\"message\":\"invalid json\"}");
+    return;
+  }
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  const char *error = nullptr;
+  if (now < 1700000000) {
+    error = "the controller clock isn't set yet";
+  }
+  // Like maintenance, entries can be backdated but not put in the future.
+  const uint32_t ts = doc["ts"] | now;
+  if (!error && (ts < 1600000000 || ts > now + 600)) {
+    error = "date must not be in the future";
+  }
+  const char *action = doc["action"] | "";
+  CartridgeSlot slot = CartridgeSlot::Sanitizer;
+  const bool hasSlot = cartridgeSlotFromName(doc["slot"] | "", &slot);
+  if (!error) {
+    if (strcmp(action, "reading") == 0) {
+      error = water_.addReading(ts, doc["san"] | NAN, doc["ph"] | NAN, doc["ta"] | NAN, doc["th"] | NAN,
+                                doc["note"] | "");
+    } else if (strcmp(action, "dose") == 0) {
+      error = water_.addDose(ts, doc["chem"] | "", doc["amount"] | NAN, doc["unit"] | "", doc["note"] | "");
+    } else if (strcmp(action, "replace") == 0) {
+      error = hasSlot ? water_.replaceCartridge(slot, ts, doc["dial"] | -1) : "unknown cartridge";
+    } else if (strcmp(action, "dial") == 0) {
+      error = water_.setDial(ts, doc["dial"] | -1);
+    } else if (strcmp(action, "life") == 0) {
+      error = hasSlot ? water_.setLifeDays(slot, doc["days"] | 0) : "unknown cartridge";
+    } else if (strcmp(action, "system") == 0) {
+      error = water_.setSystem(doc["system"] | "");
+    } else if (strcmp(action, "delete") == 0) {
+      error = water_.deleteEntry(doc["id"] | 0);
+    } else {
+      error = "unknown water action";
+    }
+  }
+  if (error) {
+    sendInvalid(request, error);
+    return;
+  }
+  store_.saveWater(water_);
+  sendJson(request, [this](JsonObject out) { writeWaterJson(out); });
+}
+
+void WebServerHub::sendInvalid(AsyncWebServerRequest *request, const char *message) {
+  JsonDocument out;
+  out["status"] = "invalid_value";
+  out["message"] = message;
+  String body;
+  serializeJson(out, body);
+  request->send(400, "application/json", body);
 }
 
 bool WebServerHub::isAuthorized(AsyncWebServerRequest *request) const {

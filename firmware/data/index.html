@@ -48,7 +48,7 @@
             <span class="orb-set" id="setTemp">--</span>
             <span class="orb-sublabel">set</span>
             <span class="orb-water" id="waterTemp">--</span>
-            <span class="orb-sublabel">water</span>
+            <span class="orb-sublabel" id="waterLabel">water</span>
           </button>
         </div>
         <div class="toggle-row">
@@ -98,7 +98,7 @@
           <div class="overview-hero">
             <div class="hero-temps">
               <div class="hero-temp">
-                <span class="hero-label">Water</span>
+                <span class="hero-label" id="ovWaterLabel">Water</span>
                 <strong class="hero-value" id="ovWater">--</strong>
               </div>
               <span class="hero-arrow" aria-hidden="true">→</span>
@@ -222,6 +222,7 @@
         <div class="subtabs" role="tablist" aria-label="Maintenance sections">
           <button class="subtab active" type="button" role="tab" data-subtab="maintTasks" aria-selected="true">Tasks</button>
           <button class="subtab" type="button" role="tab" data-subtab="maintFilters" aria-selected="false">Filters</button>
+          <button class="subtab" type="button" role="tab" data-subtab="maintWater" aria-selected="false">Water</button>
         </div>
 
         <div class="subpanel active" id="maintTasks" role="tabpanel">
@@ -248,6 +249,35 @@
           <ul class="fault-list" id="filterHistory"></ul>
           <button class="pill-btn btn-full" id="filterHistoryToggle" type="button" hidden>Show all</button>
         </div>
+
+        <div class="subpanel" id="maintWater" role="tabpanel">
+          <p class="settings-section-title">Latest Test</p>
+          <div class="maint-card" id="latestTest"></div>
+          <ul class="water-advice" id="waterAdvice"></ul>
+
+          <div id="cartridgeSection">
+            <p class="settings-section-title">FROG Cartridges</p>
+            <div class="maint-cards" id="cartridgeCards"></div>
+            <p class="form-hint">Pumped is time water flowed through the cartridges. Replace SmartChlor when it's empty (usually 3–5 weeks) and the mineral cartridge every 4 months or at a drain and refill.</p>
+          </div>
+
+          <p class="settings-section-title">History</p>
+          <ul class="fault-list" id="waterHistory"></ul>
+          <button class="pill-btn btn-full" id="waterHistoryToggle" type="button" hidden>Show all</button>
+
+          <p class="settings-section-title">Water Care</p>
+          <div class="card-form">
+            <div class="form-row">
+              <label class="form-row-label" for="waterSystem">Sanitizer</label>
+              <select class="form-row-input wide" id="waterSystem">
+                <option value="frog">FROG @ease</option>
+                <option value="chlorine">Chlorine</option>
+                <option value="bromine">Bromine</option>
+              </select>
+            </div>
+          </div>
+          <p class="form-hint" id="waterTargets"></p>
+        </div>
       </section>
 
       <!-- Settings -->
@@ -260,6 +290,18 @@
 
         <form id="settingsForm">
           <div class="subpanel active" id="settingsGeneral" role="tabpanel">
+            <p class="settings-section-title">Temperature</p>
+            <div class="card-form">
+              <div class="form-row">
+                <label class="form-row-label" for="tempRange">Range</label>
+                <select class="form-row-input wide" id="tempRange">
+                  <option value="high">High</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+            </div>
+            <p class="form-hint" id="tempRangeHint">Each range keeps its own set temperature. Use Low to save energy while the tub sits unused.</p>
+
             <p class="settings-section-title">Clock</p>
             <div class="card-form">
               <div class="form-row">
@@ -329,12 +371,13 @@
               </div>
               <div class="form-row" id="authPasswordRow">
                 <label class="form-row-label" for="authPassword">Password</label>
-                <input class="form-row-input wide" id="authPassword" name="authPassword" type="password" autocomplete="new-password" placeholder="Unchanged" />
+                <div class="row-actions">
+                  <input class="form-row-input wide" id="authPassword" name="authPassword" type="password" autocomplete="new-password" placeholder="Unchanged" />
+                  <button class="row-btn" id="setPassword" type="button">Set</button>
+                </div>
               </div>
             </div>
-            <p class="form-hint">When on, the app and API ask for user <strong>admin</strong> and this password.</p>
-
-            <button class="save-btn" type="submit">Save Settings</button>
+            <p class="form-hint">When on, the app and API ask for user <strong>admin</strong> and this password. Settings on this page save as you change them.</p>
           </div>
 
           <div class="subpanel" id="settingsFilters" role="tabpanel">
@@ -425,6 +468,76 @@
           <div class="modal-actions">
             <button class="modal-cancel" id="maintCancel" type="button">Cancel</button>
             <button class="modal-confirm" id="maintConfirm" type="button">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Water test / chemical / cartridge sheet -->
+      <div class="modal-overlay hidden" id="waterSheet">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="waterSheetTitle">
+          <div class="modal-handle"></div>
+          <h2 id="waterSheetTitle">Log Test</h2>
+          <p class="sheet-text" id="waterSheetText"></p>
+          <div class="card-form sheet-fields" id="waterFields">
+            <div class="form-row" data-for="reading">
+              <label class="form-row-label" for="wSan"><span id="wSanLabel">Free Chlorine</span> <span class="row-sub">ppm</span></label>
+              <input class="form-row-input" id="wSan" type="number" min="0" max="20" step="any" inputmode="decimal" />
+            </div>
+            <div class="form-row" data-for="reading">
+              <label class="form-row-label" for="wPh">pH</label>
+              <input class="form-row-input" id="wPh" type="number" min="6" max="9" step="any" inputmode="decimal" />
+            </div>
+            <div class="form-row" data-for="reading">
+              <label class="form-row-label" for="wTa">Alkalinity <span class="row-sub">ppm</span></label>
+              <input class="form-row-input" id="wTa" type="number" min="0" max="400" step="any" inputmode="decimal" />
+            </div>
+            <div class="form-row" data-for="reading">
+              <label class="form-row-label" for="wTh">Hardness <span class="row-sub">ppm · optional</span></label>
+              <input class="form-row-input" id="wTh" type="number" min="0" max="1000" step="any" inputmode="decimal" />
+            </div>
+            <div class="form-row" data-for="dose">
+              <label class="form-row-label" for="wChem">Chemical</label>
+              <input class="form-row-input wide" id="wChem" list="chemicalList" maxlength="24" autocomplete="off" placeholder="e.g. pH Down" />
+              <datalist id="chemicalList"></datalist>
+            </div>
+            <div class="form-row" data-for="dose">
+              <label class="form-row-label" for="wAmount">Amount</label>
+              <div class="row-actions">
+                <input class="form-row-input compact" id="wAmount" type="number" min="0" step="any" inputmode="decimal" />
+                <select class="form-row-input period" id="wUnit" aria-label="Unit">
+                  <option>oz</option><option>tbsp</option><option>tsp</option><option>cup</option>
+                  <option>g</option><option>ml</option><option>scoop</option><option>capful</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row" data-for="replace dial">
+              <label class="form-row-label" for="wDial">SmartChlor Dial</label>
+              <select class="form-row-input" id="wDial">
+                <option value="0">0 closed</option>
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+              </select>
+            </div>
+            <div class="form-row" data-for="life">
+              <label class="form-row-label" for="wLife">Replace Every</label>
+              <div class="row-actions">
+                <input class="form-row-input compact" id="wLife" type="number" min="1" max="365" inputmode="numeric" />
+                <span class="time-separator">days</span>
+              </div>
+            </div>
+            <div class="form-row" data-for="reading dose">
+              <label class="form-row-label" for="wNote">Note</label>
+              <input class="form-row-input wide" id="wNote" maxlength="60" autocomplete="off" placeholder="Optional" />
+            </div>
+            <div class="form-row" data-for="reading dose replace dial">
+              <label class="form-row-label" for="wDate">When</label>
+              <input class="form-row-input wide" id="wDate" type="datetime-local" />
+            </div>
+          </div>
+          <button class="sheet-danger" id="waterDelete" type="button">Delete Entry</button>
+          <div class="modal-actions">
+            <button class="modal-cancel" id="waterCancel" type="button">Cancel</button>
+            <button class="modal-confirm" id="waterConfirm" type="button">Save</button>
           </div>
         </div>
       </div>

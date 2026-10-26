@@ -34,6 +34,7 @@ constexpr uint8_t ToggleClearNotification = 0x03;
 constexpr uint8_t TogglePump1 = 0x04;
 constexpr uint8_t ToggleLight1 = 0x11;
 constexpr uint8_t ToggleHold = 0x3c;
+constexpr uint8_t ToggleTempRange = 0x50;  // high <-> low; each range keeps its own set temperature
 
 constexpr uint8_t SpaStateHold = 0x05;
 constexpr size_t MaxPumps = 6;

@@ -9,11 +9,12 @@
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
 #include "storage/store.h"
+#include "storage/water_log.h"
 
 class WebServerHub {
  public:
   WebServerHub(Balboa::SpaController &spa, Store &store, DeviceConfig &config, const RuntimeLog &runtime,
-               MaintenanceLog &maintenance);
+               MaintenanceLog &maintenance, WaterLog &water);
 
   void begin();
   void loop();
@@ -24,6 +25,9 @@ class WebServerHub {
   void handleCommandBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
   void handleMaintenanceBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
   void writeMaintenanceJson(JsonObject out);
+  void handleWaterBody(AsyncWebServerRequest *request, uint8_t *data, size_t len);
+  void writeWaterJson(JsonObject out);
+  void sendInvalid(AsyncWebServerRequest *request, const char *message);
   bool isAuthorized(AsyncWebServerRequest *request) const;
   void sendIndex(AsyncWebServerRequest *request);
   void sendState(AsyncWebServerRequest *request);
@@ -43,6 +47,7 @@ class WebServerHub {
   DeviceConfig &config_;
   const RuntimeLog &runtime_;
   MaintenanceLog &maintenance_;
+  WaterLog &water_;
   uint32_t lastBroadcastMs_ = 0;
   bool stateBroadcastPending_ = false;
 };

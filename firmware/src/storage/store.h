@@ -9,6 +9,7 @@
 #include "storage/config_model.h"
 #include "storage/maintenance.h"
 #include "storage/runtime_log.h"
+#include "storage/water_log.h"
 
 class Store {
  public:
@@ -22,6 +23,9 @@ class Store {
   // Kept in NVS rather than LittleFS so web-file and firmware uploads don't erase it.
   void loadMaintenance(MaintenanceLog &log);
   bool saveMaintenance(MaintenanceLog &log);
+  // Too big for NVS; lives with the other history on the userdata partition.
+  void loadWater(WaterLog &log);
+  bool saveWater(WaterLog &log);
   // Boots in a row that never joined WiFi; enough of them reopens the setup portal.
   uint8_t loadWifiFailedBoots();
   void saveWifiFailedBoots(uint8_t count);

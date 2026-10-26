@@ -30,6 +30,7 @@ Balboa::SpaController spa;
 WebServerHub *web = nullptr;
 RuntimeLog runtime;
 MaintenanceLog maintenance;
+WaterLog water;
 uint32_t lastRuntimeTickMs = 0;
 uint32_t lastRuntimeSaveMs = 0;
 bool wifiConnected = false;
@@ -44,6 +45,7 @@ const char *configuredTimezone() {
 }
 
 void setupOta();
+void confirmFirmware(const char *why);
 
 // Opens the blocking setup portal. Only used when there's no saved network, or when several boots in a
 // row never managed to join it.
@@ -124,6 +126,9 @@ void superviseWifi() {
     if (maintenance.dirty()) {
       store.saveMaintenance(maintenance);
     }
+    if (water.dirty()) {
+      store.saveWater(water);
+    }
     delay(200);
     ESP.restart();
   }
@@ -142,6 +147,9 @@ void setupOta() {
   ArduinoOTA.onStart([]() {
     Serial.println("[ota] start");
     disableLoopWDT();  // receiving the image blocks loop() far longer than the watchdog allows
+    // Taking an update proves WiFi and the main loop work, which is all probation checks. Without this,
+    // the restart that follows a web-file upload would look like a failed boot and roll the firmware back.
+    confirmFirmware("accepting an update");
     if (ArduinoOTA.getCommand() == U_FLASH) {
       store.saveRuntime(runtime);  // a filesystem upload replaces the file anyway
     }
@@ -157,9 +165,8 @@ void setupOta() {
   ArduinoOTA.begin();
 }
 
-// Ends an update's probation once it has joined WiFi and stayed up for a minute.
-void confirmFirmwareOnceHealthy() {
-  if (firmwareConfirmed || !wifiConnected || millis() < FirmwareProbationMs) {
+void confirmFirmware(const char *why) {
+  if (firmwareConfirmed) {
     return;
   }
   firmwareConfirmed = true;
@@ -167,7 +174,14 @@ void confirmFirmwareOnceHealthy() {
   if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
       state == ESP_OTA_IMG_PENDING_VERIFY) {
     esp_ota_mark_app_valid_cancel_rollback();
-    Serial.println("[ota] new firmware confirmed; rollback cancelled");
+    Serial.printf("[ota] new firmware confirmed (%s); rollback cancelled\n", why);
+  }
+}
+
+// Ends an update's probation once it has joined WiFi and stayed up for a minute.
+void confirmFirmwareOnceHealthy() {
+  if (!firmwareConfirmed && wifiConnected && millis() >= FirmwareProbationMs) {
+    confirmFirmware("healthy for a minute");
   }
 }
 
@@ -196,6 +210,7 @@ void trackRuntime() {
   // Water moves through the filters whenever pump 1 or a circulation pump runs.
   if (state.jet1Speed > 0 || state.circulationPump) {
     maintenance.addPumpTime(credited);
+    water.addPumpTime(credited);  // FROG cartridges sit in the same flow
   }
   const uint32_t date = localDate();
   if (date == 0) {
@@ -214,6 +229,9 @@ void trackRuntime() {
     if (maintenance.dirty()) {
       store.saveMaintenance(maintenance);
     }
+    if (water.dirty()) {
+      store.saveWater(water);
+    }
     lastRuntimeSaveMs = now;
   }
 }
@@ -231,11 +249,19 @@ void setup() {
   }
   deviceConfig = store.loadConfig();
   store.loadRuntime(runtime);
+  // Until the spa reports water temperature again, show the latest hour we have on record.
+  for (auto hour = runtime.hours().rbegin(); hour != runtime.hours().rend(); ++hour) {
+    if (hour->waterTempSec) {
+      spa.seedLastWaterTemp(hour->waterTempAvg, hour->start + 1800);
+      break;
+    }
+  }
   store.loadMaintenance(maintenance);
   maintenance.ensureDefaultTasks(static_cast<uint32_t>(time(nullptr)));
   if (maintenance.dirty()) {
     store.saveMaintenance(maintenance);
   }
+  store.loadWater(water);
 
   Serial2.begin(AppConfig::SpaBaud, SERIAL_8N1, AppConfig::Rs485RxPin, AppConfig::Rs485TxPin);
   spa.begin(Serial2, AppConfig::Rs485TxEnablePin);
@@ -246,7 +272,7 @@ void setup() {
   setupWifi();
   setupTime();
 
-  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance);
+  web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance, water);
   web->begin();
 
   // A loop() stuck for 5 s panics and reboots, saving a crash report to the coredump partition.

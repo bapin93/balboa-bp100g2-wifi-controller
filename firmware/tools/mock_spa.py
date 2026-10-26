@@ -82,7 +82,12 @@ class MockSpa:
             "capabilities": {"setTime": True, "hideJet2": False},
             "location": dict(zip(("lat", "lon"), map(float, args.location.split(",")))) if args.location else None,
         }
+        self.water_unknown = False  # like a real spa between pump runs: true temp simulated, not reported
+        self.last_water = None      # last reported reading and when, as the firmware keeps it
+        self.last_water_at = 0
+        self.range_set_temp = {True: 100.0, False: 80.0}  # set temp remembered per range
         self.maint = self._seed_maintenance(args.no_filters)
+        self.water = self._seed_water(args.no_filters)
         self.capture_active = False
         self.capture_lines = []
         self.outside_daily, self.outside_hourly = self._fetch_outside()
@@ -203,6 +208,95 @@ class MockSpa:
                 return "filter not found"
             else:
                 return "unknown maintenance action"
+            return None
+
+    # ── water care (mirrors src/storage/water_log.cpp) ──
+
+    def _seed_water(self, empty):
+        now, day = int(time.time()), 86400
+        cartridges = {"sanitizer": {"installedAt": 0, "pumpSec": 0, "lifeDays": 28},  # no dial until one is recorded
+                      "mineral": {"installedAt": 0, "pumpSec": 0, "lifeDays": 120}}
+        if empty:
+            return {"system": "frog", "nextId": 1, "cartridges": cartridges, "entries": []}
+        cartridges["sanitizer"].update(installedAt=now - 31 * day, pumpSec=190 * 3600, dial=3)
+        cartridges["mineral"].update(installedAt=now - 50 * day, pumpSec=300 * 3600)
+        entries = [
+            {"type": "cartridge", "ts": now - 50 * day, "slot": "mineral"},
+            {"type": "reading", "ts": now - 45 * day, "san": 1.0, "ph": 7.4, "ta": 100, "th": 180},
+            {"type": "cartridge", "ts": now - 31 * day, "slot": "sanitizer", "dial": 3},
+            {"type": "reading", "ts": now - 20 * day, "san": 0.5, "ph": 7.8, "ta": 120},
+            {"type": "dose", "ts": now - 20 * day, "chem": "pH Down", "amount": 1, "unit": "tbsp"},
+            {"type": "dose", "ts": now - 9 * day, "chem": "Shock (non-chlorine)", "amount": 3, "unit": "oz",
+             "note": "after a party"},
+            {"type": "reading", "ts": now - 2 * day, "san": 0.25, "ph": 7.0, "ta": 70},
+        ]
+        for i, entry in enumerate(entries, 1):
+            entry["id"] = i
+        return {"system": "frog", "nextId": len(entries) + 1, "cartridges": cartridges, "entries": entries}
+
+    def water_json(self):
+        with self.lock:
+            cartridges = {k: {**c, "pumpSec": int(c["pumpSec"])} for k, c in self.water["cartridges"].items()}
+            return {**self.water, "cartridges": cartridges, "now": int(time.time())}
+
+    def water_action(self, body):
+        with self.lock:
+            w, now = self.water, int(time.time())
+            ts = int(body.get("ts", now))
+            if ts > now + 600:
+                return "date must not be in the future"
+
+            def add(entry):
+                w["entries"] = (w["entries"] + [{"id": w["nextId"], "ts": ts, **entry}])[-150:]
+                w["nextId"] += 1
+
+            def note():
+                text = str(body.get("note", "")).strip()
+                return {"note": text} if text else {}
+
+            action, slot = body.get("action"), body.get("slot")
+            if action == "reading":
+                pads = {k: float(body[k]) for k in ("san", "ph", "ta", "th") if body.get(k) is not None}
+                if not pads:
+                    return "enter at least one reading"
+                if not 6 <= pads.get("ph", 7) <= 9:
+                    return "pH must be 6.0 to 9.0"
+                add({"type": "reading", **pads, **note()})
+            elif action == "dose":
+                chem, amount, unit = str(body.get("chem", "")).strip(), body.get("amount"), body.get("unit", "")
+                if not chem or len(chem) > 24:
+                    return "pick a chemical"
+                if not isinstance(amount, (int, float)) or amount <= 0:
+                    return "amount must be more than 0"
+                add({"type": "dose", "chem": chem, "amount": amount, "unit": unit, **note()})
+            elif action == "replace" and slot in w["cartridges"]:
+                c = w["cartridges"][slot]
+                c.update(installedAt=ts, pumpSec=0)
+                entry = {"type": "cartridge", "slot": slot}
+                if slot == "sanitizer":
+                    if body.get("dial") is not None:
+                        c["dial"] = int(body["dial"])
+                    if c.get("dial") is not None:
+                        entry["dial"] = c["dial"]
+                add(entry)
+            elif action == "dial":
+                if not 0 <= int(body.get("dial", -1)) <= 6:
+                    return "dial must be 0 to 6"
+                w["cartridges"]["sanitizer"]["dial"] = int(body["dial"])
+                add({"type": "dial", "dial": int(body["dial"])})
+            elif action == "life" and slot in w["cartridges"]:
+                if not 1 <= int(body.get("days", 0)) <= 365:
+                    return "replace every 1 to 365 days"
+                w["cartridges"][slot]["lifeDays"] = int(body["days"])
+            elif action == "system" and body.get("system") in ("frog", "chlorine", "bromine"):
+                w["system"] = body["system"]
+            elif action == "delete":
+                before = len(w["entries"])
+                w["entries"] = [e for e in w["entries"] if e["id"] != body.get("id")]
+                if len(w["entries"]) == before:
+                    return "entry not found"
+            else:
+                return "unknown water action"
             return None
 
     # ── simulation ──
@@ -337,14 +431,19 @@ class MockSpa:
                     if f["stints"] and f["stints"][-1][1] == 0:
                         f["pumpSec"] += dt
                         f["pumpSecSinceClean"] += dt
+                if self.water["system"] == "frog":
+                    for c in self.water["cartridges"].values():
+                        if c["installedAt"]:
+                            c["pumpSec"] += dt
             top = int(time.time()) // 3600 * 3600
             if self.hours[-1]["start"] != top:
                 self.hours = (self.hours + [{"start": top, "heatingSec": 0, "waterTemp": s["waterTemp"]}])[-48:]
             hour = self.hours[-1]
             hour["heatingSec"] += dt if s["heating"] else 0
-            hour["waterTemp"] = round(s["waterTemp"], 1)
+            if not self.water_unknown:  # history skips readings the spa didn't report
+                hour["waterTemp"] = round(s["waterTemp"], 1)
+                today["waterTemp"] = round(s["waterTemp"], 1)
             hour["setTemp"] = s["setTemp"]
-            today["waterTemp"] = round(s["waterTemp"], 1)
             today["setTemp"] = s["setTemp"]
             today["heatingSec"] += dt if s["heating"] else 0
             today["pumpLowSec"] += dt if s["jet1Speed"] == 1 else 0
@@ -472,6 +571,19 @@ class MockSpa:
                 self.hold_until = time.monotonic() + 3600
             later(0.6, toggle_hold)
             return 202, "command accepted"
+        if action == "tempRange":
+            if cmd.get("value") not in ("high", "low"):
+                return 400, "range must be high or low"
+            high = cmd["value"] == "high"
+            if high == s["tempRangeHigh"]:
+                return 202, "already in high range" if high else "already in low range"
+
+            def toggle_range():  # like the pack, each range keeps its own set temperature
+                self.range_set_temp[s["tempRangeHigh"]] = s["setTemp"]
+                s["tempRangeHigh"] = high
+                s["setTemp"] = self.range_set_temp[high]
+            later(0.6, toggle_range)
+            return 202, "command accepted"
         if action == "clearReminder":
             later(0.6, lambda: s.update(reminder=0))
             return 202, "command accepted"
@@ -505,7 +617,9 @@ class MockSpa:
             now = datetime.now()
             data = {
                 **s,
-                "waterTemp": round(s["waterTemp"]),
+                "waterTemp": None if self.water_unknown else round(s["waterTemp"]),
+                "lastWaterTemp": self.last_water if self.water_unknown else round(s["waterTemp"]),
+                "lastWaterTempAt": self.last_water_at if self.water_unknown else int(time.time()),
                 "jet1": s["jet1Speed"] != 0,
                 "jet2": s["jet2Speed"] != 0,
                 "setTempRange": {"min": 80, "max": 104} if s["tempRangeHigh"] else {"min": 50, "max": 99},
@@ -570,6 +684,15 @@ class MockSpa:
                 self.hold_until = time.monotonic() + 60 * fields.get("holdMinutes", 60)
             if fields.pop("faultLogEmpty", False):
                 self.faults = []
+            if "waterTemp" in fields:  # null: the spa stops reporting it; a number: reported again
+                value = fields.pop("waterTemp")
+                if value is None and not self.water_unknown:
+                    self.last_water, self.last_water_at = round(self.state["waterTemp"]), int(time.time())
+                self.water_unknown = value is None
+                if value is not None:
+                    self.state["waterTemp"] = float(value)
+            if "lastWaterTempAgeMin" in fields:  # backdate the last reading to try the age display
+                self.last_water_at = int(time.time()) - 60 * int(fields.pop("lastWaterTempAgeMin"))
             self.state.update({k: v for k, v in fields.items() if k in self.state})
 
 
@@ -611,6 +734,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "total": len(self.spa.faults), "entries": self.spa.faults},
             "/api/runtime": lambda: self.spa.runtime_json(),
             "/api/maintenance": lambda: self.spa.maintenance_json(),
+            "/api/water": lambda: self.spa.water_json(),
             "/api/debug-log": None,
             "/api/status-capture": None,
         }
@@ -646,6 +770,11 @@ class Handler(BaseHTTPRequestHandler):
             if error:
                 return self._json(400, {"status": "invalid_value", "message": error})
             return self._json(200, self.spa.maintenance_json())
+        if self.path == "/api/water":
+            error = self.spa.water_action(body)
+            if error:
+                return self._json(400, {"status": "invalid_value", "message": error})
+            return self._json(200, self.spa.water_json())
         if self.path == "/api/config":
             self.spa.save_config(body)
             return self._json(200, self.spa.config_json())
@@ -749,7 +878,7 @@ def main():
     parser.add_argument("--heat-rate", type=float, default=0.05, help="F per second while heating (fast, for demos)")
     parser.add_argument("--reminder", type=lambda v: int(v, 0), default=0, help="reminder code, e.g. 4 clean filter")
     parser.add_argument("--no-faults", action="store_true", help="start with an empty fault log")
-    parser.add_argument("--no-filters", action="store_true", help="start with no filters on the Maintenance tab")
+    parser.add_argument("--no-filters", action="store_true", help="start with no filters, cartridges or water tests on the Maintenance tab")
     parser.add_argument("--location", default="39.74,-104.99",
                         help="lat,lon for outside temperature (default Denver); empty string for none")
     parser.add_argument("--no-heat-pump", action="store_true",
