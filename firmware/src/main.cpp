@@ -6,12 +6,23 @@
 #include <cstdlib>
 #include <ctime>
 
+#include <esp_ota_ops.h>
+
 #include "balboa/spa.h"
 #include "config.h"
 #include "network/web_server.h"
 #include "storage/store.h"
 
+// The Arduino core marks a freshly updated firmware "good" as soon as it boots, which disables the
+// bootloader's rollback. Returning true defers that to confirmFirmwareOnceHealthy(): if a new firmware
+// crashes or never reaches WiFi first, the next boot goes back to the previous one.
+extern "C" bool verifyRollbackLater() {
+  return true;
+}
+
 namespace {
+
+constexpr uint32_t FirmwareProbationMs = 60UL * 1000UL;
 
 Store store;
 DeviceConfig deviceConfig;
@@ -24,6 +35,7 @@ uint32_t lastRuntimeSaveMs = 0;
 bool wifiConnected = false;
 bool otaStarted = false;
 bool failedBootsCleared = false;
+bool firmwareConfirmed = false;
 uint32_t lastWifiOkMs = 0;
 uint32_t lastWifiAttemptMs = 0;
 
@@ -60,6 +72,7 @@ void setupWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(AppConfig::Hostname);
   WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);  // always on mains power; modem sleep adds 100+ ms to every request
 
   WiFiManager wm;
   const uint8_t failedBoots = store.loadWifiFailedBoots();
@@ -128,6 +141,7 @@ void setupOta() {
   ArduinoOTA.setHostname(AppConfig::Hostname);
   ArduinoOTA.onStart([]() {
     Serial.println("[ota] start");
+    disableLoopWDT();  // receiving the image blocks loop() far longer than the watchdog allows
     if (ArduinoOTA.getCommand() == U_FLASH) {
       store.saveRuntime(runtime);  // a filesystem upload replaces the file anyway
     }
@@ -136,8 +150,25 @@ void setupOta() {
     }
   });
   ArduinoOTA.onEnd([]() { Serial.println("[ota] end"); });
-  ArduinoOTA.onError([](ota_error_t error) { Serial.printf("[ota] error=%u\n", error); });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[ota] error=%u\n", error);
+    enableLoopWDT();
+  });
   ArduinoOTA.begin();
+}
+
+// Ends an update's probation once it has joined WiFi and stayed up for a minute.
+void confirmFirmwareOnceHealthy() {
+  if (firmwareConfirmed || !wifiConnected || millis() < FirmwareProbationMs) {
+    return;
+  }
+  firmwareConfirmed = true;
+  esp_ota_img_states_t state;
+  if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+      state == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    Serial.println("[ota] new firmware confirmed; rollback cancelled");
+  }
 }
 
 // Local date as YYYYMMDD, or 0 until NTP has set the clock.
@@ -217,10 +248,20 @@ void setup() {
 
   web = new WebServerHub(spa, store, deviceConfig, runtime, maintenance);
   web->begin();
+
+  // A loop() stuck for 5 s panics and reboots, saving a crash report to the coredump partition.
+  enableLoopWDT();
 }
 
 void loop() {
   superviseWifi();
+  confirmFirmwareOnceHealthy();
+#ifdef BP100G2_CRASH_TEST
+  // Bench test for rollback: built only with -D BP100G2_CRASH_TEST, never shipped.
+  if (millis() > 20000) {
+    abort();
+  }
+#endif
   spa.loop();
   trackRuntime();
   if (web) {

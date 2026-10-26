@@ -7,16 +7,25 @@
 #include "config.h"
 
 bool Store::begin() {
+  // Web app files: replaced wholesale by uploadfs.
   if (!LittleFS.begin(true)) {
-    Serial.println("[store] LittleFS mount failed");
-    return false;
+    Serial.println("[store] web partition mount failed");
+  }
+  // Settings and history get their own partition so uploads don't erase them. Older partition tables
+  // don't have it; fall back to the web partition rather than losing settings altogether.
+  if (dataFs_.begin(true, "/userdata", 5, AppConfig::DataPartitionLabel)) {
+    data_ = &dataFs_;
+    Serial.println("[store] settings on the userdata partition");
+  } else {
+    data_ = &LittleFS;
+    Serial.println("[store] no userdata partition; keeping settings with the web files");
   }
   return ensureDefaults();
 }
 
 DeviceConfig Store::loadConfig() {
   DeviceConfig config;
-  File file = LittleFS.open(AppConfig::ConfigPath, "r");
+  File file = data_->open(AppConfig::ConfigPath, "r");
   if (!file) {
     saveConfig(config);
     return config;
@@ -34,7 +43,7 @@ DeviceConfig Store::loadConfig() {
 }
 
 bool Store::saveConfig(const DeviceConfig &config) {
-  File file = LittleFS.open(AppConfig::ConfigPath, "w");
+  File file = data_->open(AppConfig::ConfigPath, "w");
   if (!file) {
     Serial.println("[store] config open for write failed");
     return false;
@@ -46,7 +55,7 @@ bool Store::saveConfig(const DeviceConfig &config) {
 }
 
 void Store::loadRuntime(RuntimeLog &log) {
-  File file = LittleFS.open(AppConfig::RuntimePath, "r");
+  File file = data_->open(AppConfig::RuntimePath, "r");
   if (!file) {
     return;
   }
@@ -90,7 +99,7 @@ void Store::loadRuntime(RuntimeLog &log) {
 }
 
 bool Store::saveRuntime(const RuntimeLog &log) {
-  File file = LittleFS.open(AppConfig::RuntimePath, "w");
+  File file = data_->open(AppConfig::RuntimePath, "w");
   if (!file) {
     Serial.println("[store] runtime open for write failed");
     return false;
@@ -193,7 +202,7 @@ void Store::saveWifiFailedBoots(uint8_t count) {
 }
 
 bool Store::ensureDefaults() {
-  if (!LittleFS.exists(AppConfig::ConfigPath)) {
+  if (!data_->exists(AppConfig::ConfigPath)) {
     DeviceConfig defaults;
     return saveConfig(defaults);
   }

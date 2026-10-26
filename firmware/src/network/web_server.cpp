@@ -5,11 +5,42 @@
 #include <ctime>
 
 #include <LittleFS.h>
+#include <WiFi.h>
+#include <esp_core_dump.h>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
+
+#include "build_info.h"
 
 #include "config.h"
 #include "storage/config_model.h"
 
 namespace {
+
+const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_EXT: return "external reset";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "crash";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "brownout";
+    default: return "other";
+  }
+}
+
+const char *otaStateName(esp_ota_img_states_t state) {
+  switch (state) {
+    case ESP_OTA_IMG_NEW: return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY: return "on probation";
+    case ESP_OTA_IMG_VALID: return "confirmed";
+    case ESP_OTA_IMG_INVALID: return "invalid";
+    case ESP_OTA_IMG_ABORTED: return "rolled back";
+    default: return "flashed over USB";
+  }
+}
 
 // Filter cycles are owned by the spa. The config copy is only a cache of its last read-back.
 void copyFilterCycles(const DeviceConfig &from, DeviceConfig &to) {
@@ -107,6 +138,25 @@ void WebServerHub::setupRoutes() {
   server_.on("/", HTTP_GET, [this](AsyncWebServerRequest *request) { sendIndex(request); });
   server_.on("/index.html", HTTP_GET, [this](AsyncWebServerRequest *request) { sendIndex(request); });
   server_.on("/api/state", HTTP_GET, [this](AsyncWebServerRequest *request) { sendState(request); });
+  // Controller health: why it last restarted, memory, WiFi, firmware slot and crash-report status.
+  server_.on("/api/system", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    sendJson(request, [this](JsonObject out) {
+      out["uptimeSec"] = millis() / 1000;
+      out["resetReason"] = resetReasonName(esp_reset_reason());
+      out["freeHeap"] = ESP.getFreeHeap();
+      out["minFreeHeap"] = ESP.getMinFreeHeap();
+      out["largestFreeBlock"] = ESP.getMaxAllocHeap();
+      out["wifiRssi"] = WiFi.RSSI();
+      out["built"] = FIRMWARE_BUILD;
+      const esp_partition_t *running = esp_ota_get_running_partition();
+      out["firmwareSlot"] = running->label;
+      esp_ota_img_states_t state;
+      out["firmwareState"] = esp_ota_get_state_partition(running, &state) == ESP_OK ? otaStateName(state)
+                                                                                    : "flashed over USB";
+      out["crashReportStored"] = esp_core_dump_image_check() == ESP_OK;
+      out["settingsPartition"] = store_.hasDataPartition() ? "userdata" : "shared with web files";
+    });
+  });
   server_.on("/api/spa-info", HTTP_GET, [this](AsyncWebServerRequest *request) {
     sendJson(request, [this](JsonObject out) { spa_.writeSpaInfoJson(out); });
   });

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
+#include <FS.h>
+#include <LittleFS.h>
 
 #include <vector>
 
@@ -11,6 +13,8 @@
 class Store {
  public:
   bool begin();
+  // True when settings and history are on their own partition (false = fallback onto the web partition).
+  bool hasDataPartition() const { return data_ == &dataFs_; }
   DeviceConfig loadConfig();
   bool saveConfig(const DeviceConfig &config);
   void loadRuntime(RuntimeLog &log);
@@ -24,4 +28,7 @@ class Store {
 
  private:
   bool ensureDefaults();
+
+  fs::LittleFSFS dataFs_;
+  fs::FS *data_ = &LittleFS;  // where settings and runtime history live
 };

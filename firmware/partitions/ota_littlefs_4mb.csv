@@ -1,6 +1,14 @@
-# Name,   Type, SubType, Offset,  Size,    Flags
-nvs,      data, nvs,     0x9000,  0x5000,
-otadata,  data, ota,     0xe000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x1a0000,
-app1,     app,  ota_1,   0x1b0000,0x1a0000,
-spiffs,   data, spiffs,  0x350000,0xb0000,
+# Name,   Type, SubType,  Offset,   Size,
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x1a0000,
+app1,     app,  ota_1,    0x1b0000, 0x1a0000,
+# Web app files. uploadfs (USB and OTA) replaces this whole area, so nothing else lives here.
+# It must stay the only spiffs/fat/littlefs-subtype partition: PlatformIO targets the last one and the
+# OTA updater the first.
+spiffs,   data, spiffs,   0x350000, 0x60000,
+# Settings and runtime history; uploads never touch it. Custom subtype keeps it out of both tools' sight;
+# the firmware mounts it as LittleFS by label.
+userdata, data, 0x40,     0x3b0000, 0x40000,
+# Crash reports, written by the framework when the firmware panics.
+coredump, data, coredump, 0x3f0000, 0x10000,

@@ -17,6 +17,7 @@ constexpr uint32_t WifiRestartAfterMs = 15UL * 60UL * 1000UL;  // last resort wh
 constexpr uint8_t WifiPortalAfterFailedBoots = 3;            // then assume the network changed
 constexpr const char *Hostname = "bp100g2-controller";
 
+constexpr const char *DataPartitionLabel = "userdata";
 constexpr const char *ConfigPath = "/config.json";
 constexpr const char *RuntimePath = "/runtime.json";
 constexpr uint32_t RuntimeSaveIntervalMs = 15UL * 60UL * 1000UL;
