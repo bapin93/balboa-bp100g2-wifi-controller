@@ -1,5 +1,6 @@
 #include "scheduler/smart_heat.h"
 
+#include <algorithm>
 #include <ctime>
 
 namespace {
@@ -59,7 +60,9 @@ void SmartHeat::loop() {
   inUse_ = detector_.update(now, signals);
   std::lock_guard<std::mutex> lock(mutex_);
   const ControllerTick tick = makeTick(now);
+  const uint32_t tickStartMs = millis();
   const float setTemp = controller_.tick(tick, makeContext());
+  tickMaxMs_ = std::max<uint32_t>(tickMaxMs_, millis() - tickStartMs);
   if (!isnan(setTemp)) {
     JsonDocument doc;
     doc["action"] = "setTemp";
@@ -135,6 +138,7 @@ void SmartHeat::writePlanJson(JsonObject out) {
   std::lock_guard<std::mutex> lock(mutex_);
   controller_.writePlanJson(out);
   usage_.toJson(out["usage"].to<JsonObject>());
+  out["tickMaxMs"] = tickMaxMs_;
 }
 
 ControllerTick SmartHeat::makeTick(uint32_t now) const {

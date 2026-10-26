@@ -13,19 +13,33 @@ struct Transition {
   float fraction;  // of the step the heater runs
 };
 
-// Exponential approach to `level`: the exact solution of dT/dt = loss * (level - T).
-float settle(float temp, float level, float loss, float hours) {
-  return level + (temp - level) * expf(-loss * hours);
+// The per-step constants of the physics, worked out once per plan: the search simulates a step hundreds of
+// thousands of times, and expf() dominated it on the ESP32.
+struct Physics {
+  bool lossy;  // lossCoeff > 0
+  float decay;  // expf(-lossCoeff * hours): how much of the gap to the settling level remains after a step
+  float heaterLift;  // heaterRate / lossCoeff: how far above the air heating levels off
+  float heaterStep;  // heaterRate * hours, for a lossless tub
+
+  Physics(const PlanInput &in, float stepHours)
+      : lossy(in.lossCoeff > 0),
+        decay(lossy ? expf(-in.lossCoeff * stepHours) : 1.0f),
+        heaterLift(lossy ? in.heaterRate / in.lossCoeff : 0.0f),
+        heaterStep(in.heaterRate * stepHours) {}
+};
+
+// Exponential approach to `level`: the exact solution of dT/dt = loss * (level - T) over one step.
+float settle(float temp, float level, float decay) {
+  return level + (temp - level) * decay;
 }
 
-Transition simulate(const PlanInput &in, const PlanStep &step, float temp, bool heat, float hours) {
+Transition simulate(const Physics &physics, const PlanStep &step, float temp, bool heat) {
   const float air = isnan(step.outside) ? ThermalModel::FallbackOutsideF : step.outside;
-  const float coast = in.lossCoeff > 0 ? settle(temp, air, in.lossCoeff, hours) : temp;
+  const float coast = physics.lossy ? settle(temp, air, physics.decay) : temp;
   if (!heat || coast >= step.maxTemp) {
     return {coast, 0};
   }
-  const float full = in.lossCoeff > 0 ? settle(temp, air + in.heaterRate / in.lossCoeff, in.lossCoeff, hours)
-                                      : temp + in.heaterRate * hours;
+  const float full = physics.lossy ? settle(temp, air + physics.heaterLift, physics.decay) : temp + physics.heaterStep;
   if (full <= step.maxTemp) {
     return {full, 1};
   }
@@ -47,13 +61,14 @@ PlanResult HeatPlanner::plan(const PlanInput &in) {
   }
   const float hours = static_cast<float>(in.stepSec) / 3600.0f;
   const float kwhPerStep = in.heaterKw * hours;
+  const Physics physics(in, hours);
 
   // The water can't get colder than it would coasting the whole way, so that bounds the grid from below.
   float lo = in.waterTemp;
   float hi = in.waterTemp;
   float coasting = in.waterTemp;
   for (const PlanStep &step : in.steps) {
-    coasting = simulate(in, step, coasting, false, hours).next;
+    coasting = simulate(physics, step, coasting, false).next;
     lo = std::min(lo, coasting);
     hi = std::max(hi, step.maxTemp);
   }
@@ -75,8 +90,8 @@ PlanResult HeatPlanner::plan(const PlanInput &in) {
     const PlanStep &step = in.steps[s];
     for (size_t i = 0; i < points; ++i) {
       const float temp = lo + static_cast<float>(i) * GridStepF;
-      const Transition off = simulate(in, step, temp, false, hours);
-      const Transition on = simulate(in, step, temp, true, hours);
+      const Transition off = simulate(physics, step, temp, false);
+      const Transition on = simulate(physics, step, temp, true);
       const float offCost = shortfall(step, off.next) * ShortfallCostPerF + costAt(later, off.next);
       const float onCost = on.fraction * kwhPerStep * step.price + shortfall(step, on.next) * ShortfallCostPerF +
                            costAt(later, on.next);
@@ -95,7 +110,7 @@ PlanResult HeatPlanner::plan(const PlanInput &in) {
   for (size_t s = 0; s < steps; ++s) {
     const PlanStep &step = in.steps[s];
     const float pos = std::min(std::max((temp - lo) / GridStepF, 0.0f), static_cast<float>(points - 1));
-    const Transition move = simulate(in, step, temp, heatHere[s * points + static_cast<size_t>(pos)], hours);
+    const Transition move = simulate(physics, step, temp, heatHere[s * points + static_cast<size_t>(pos)]);
     temp = move.next;
     result.heat.push_back(move.fraction);
     result.temp.push_back(temp);
@@ -138,13 +153,13 @@ uint32_t earliestReady(const PlanInput &in, float target) {
   if (isnan(in.waterTemp) || in.stepSec == 0) {
     return 0;
   }
-  const float hours = static_cast<float>(in.stepSec) / 3600.0f;
+  const Physics physics(in, static_cast<float>(in.stepSec) / 3600.0f);
   float temp = in.waterTemp;
   for (size_t s = 0; s < in.steps.size(); ++s) {
     if (temp >= target - HeatPlanner::GridStepF) {
       return in.start + s * in.stepSec;
     }
-    temp = simulate(in, in.steps[s], temp, true, hours).next;
+    temp = simulate(physics, in.steps[s], temp, true).next;
   }
   return temp >= target - HeatPlanner::GridStepF ? in.start + in.steps.size() * in.stepSec : 0;
 }

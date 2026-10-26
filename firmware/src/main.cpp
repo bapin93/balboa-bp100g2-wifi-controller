@@ -306,6 +306,8 @@ void setup() {
   weather.begin();
   smart.begin();
 
+  // Room for ~180 ms of bus traffic, so a slow loop (flash writes, OTA, planning) doesn't drop frames.
+  Serial2.setRxBufferSize(AppConfig::SpaRxBufferBytes);
   Serial2.begin(AppConfig::SpaBaud, SERIAL_8N1, AppConfig::Rs485RxPin, AppConfig::Rs485TxPin);
   spa.begin(Serial2, AppConfig::Rs485TxEnablePin);
 #ifdef BP100G2_BENCH_MODE
@@ -331,11 +333,14 @@ void loop() {
     abort();
   }
 #endif
+  // Timed without the OTA handler, which blocks for the whole upload by design.
+  const uint32_t workStartMs = millis();
   spa.loop();
   trackRuntime();
   smart.loop();
   if (web) {
     web->loop();
+    web->noteLoopTime(millis() - workStartMs);
   }
   if (otaStarted) {
     ArduinoOTA.handle();

@@ -50,6 +50,7 @@ class SmartHeat {
   volatile bool inUse_ = false;
   uint32_t seenIntentAt_ = 0;
   uint32_t lastTickMs_ = 0;
+  uint32_t tickMaxMs_ = 0;  // slowest tick since boot; replanning is most of it
   char message_[96] = "";
   char lastError_[96] = "";
 };

@@ -23,6 +23,8 @@ class WebServerHub {
   void begin();
   void loop();
   void broadcastState();
+  // The longest main-loop pass since boot, for /api/system.
+  void noteLoopTime(uint32_t ms) { loopMaxMs_ = ms > loopMaxMs_ ? ms : loopMaxMs_; }
 
  private:
   void setupRoutes();
@@ -58,5 +60,6 @@ class WebServerHub {
   const WeatherClient &weather_;
   SmartHeat &smart_;
   uint32_t lastBroadcastMs_ = 0;
+  volatile uint32_t loopMaxMs_ = 0;
   bool stateBroadcastPending_ = false;
 };

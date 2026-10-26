@@ -6,6 +6,7 @@ namespace AppConfig {
 
 constexpr uint32_t SerialBaud = 115200;
 constexpr uint32_t SpaBaud = 115200;
+constexpr size_t SpaRxBufferBytes = 2048;
 
 constexpr int Rs485RxPin = 16;
 constexpr int Rs485TxPin = 17;

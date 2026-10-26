@@ -157,6 +157,7 @@ void WebServerHub::setupRoutes() {
       out["minFreeHeap"] = ESP.getMinFreeHeap();
       out["largestFreeBlock"] = ESP.getMaxAllocHeap();
       out["wifiRssi"] = WiFi.RSSI();
+      out["loopMaxMs"] = loopMaxMs_;
       out["built"] = FIRMWARE_BUILD;
       const esp_partition_t *running = esp_ota_get_running_partition();
       out["firmwareSlot"] = running->label;
