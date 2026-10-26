@@ -366,7 +366,7 @@ void HeatController::writeNextHeat(JsonObject out, uint32_t now) const {
   uint32_t nextHeat = 0;
   for (size_t i = s; planned && i < plan_.heat.size(); ++i) {
     if (plan_.heat[i] > 0) {
-      nextHeat = std::max(now, planStart_ + static_cast<uint32_t>(i) * StepSec);
+      nextHeat = planStart_ + static_cast<uint32_t>(i) * StepSec;  // fixed, so the state only changes when the plan does
       break;
     }
   }

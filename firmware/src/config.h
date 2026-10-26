@@ -28,5 +28,10 @@ constexpr const char *UsagePath = "/usage.json";
 constexpr uint32_t RuntimeSaveIntervalMs = 15UL * 60UL * 1000UL;
 constexpr size_t MaxCommandQueue = 8;
 constexpr uint32_t StateBroadcastMinMs = 250;
+// Unchanged state is resent this often, so the app can tell a quiet connection from a dead one.
+constexpr uint32_t StateHeartbeatMs = 5000;
+// How long a WebSocket may wait for TCP acknowledgments before it's dropped. The library default (5 s) is
+// shorter than TCP's own retransmit backoff on a weak WiFi link, so brief packet loss cut connections.
+constexpr uint32_t WsAckTimeoutMs = 20000;
 
 }  // namespace AppConfig

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <utility>
 
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -88,6 +89,7 @@ void WebServerHub::begin() {
   ws_.onEvent([this](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg,
                      uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
+      client->client()->setAckTimeout(AppConfig::WsAckTimeoutMs);
       client->text(stateJson());
       return;
     }
@@ -128,20 +130,28 @@ void WebServerHub::loop() {
   if (spa_.consumeFilterCyclesRead()) {
     persistFilterCyclesRead();
   }
+  // The spa sends a status frame about three times a second, nearly always identical. Changes go out
+  // right away (at most every StateBroadcastMinMs); repeats are skipped except for a heartbeat. On a weak
+  // WiFi link every packet saved is one that can't be lost.
   stateBroadcastPending_ = spa_.consumeStateChanged() || stateBroadcastPending_;
-  const uint32_t now = millis();
-  if (stateBroadcastPending_ && now - lastBroadcastMs_ > AppConfig::StateBroadcastMinMs) {
-    broadcastState();
+  const uint32_t sinceLast = millis() - lastBroadcastMs_;
+  const bool heartbeatDue = sinceLast >= AppConfig::StateHeartbeatMs;
+  if (heartbeatDue || (stateBroadcastPending_ && sinceLast >= AppConfig::StateBroadcastMinMs)) {
     stateBroadcastPending_ = false;
-  } else if (!stateBroadcastPending_ && now - lastBroadcastMs_ > 1000) {
-    broadcastState();
+    String json = stateJson();
+    if (heartbeatDue || json != lastStateJson_) {
+      ws_.textAll(json);
+      lastBroadcastMs_ = millis();
+      lastStateJson_ = std::move(json);
+    }
   }
 }
 
 void WebServerHub::broadcastState() {
-  const String json = stateJson();
+  String json = stateJson();
   ws_.textAll(json);
   lastBroadcastMs_ = millis();
+  lastStateJson_ = std::move(json);
 }
 
 void WebServerHub::setupRoutes() {

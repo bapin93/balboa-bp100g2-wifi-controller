@@ -669,7 +669,6 @@ class MockSpa:
                 "faultLogSeq": self.fault_seq,
                 "faultLogReading": time.monotonic() < self.fault_reading_until,
                 "spaTime": now.strftime("%H:%M"),
-                "lastUpdateMs": int(time.monotonic() * 1000),
                 "valid": True,
                 "statusCaptureActive": self.capture_active,
                 "statusCaptureLines": len(self.capture_lines),

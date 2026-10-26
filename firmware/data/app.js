@@ -1773,17 +1773,43 @@ function stopCapturePolling() {
   refreshStatusCapture().catch((error) => showToast(error.message));
 }
 
+// The controller sends state when it changes plus a heartbeat every 5 s, so silence this long means the
+// connection is dead even if the browser hasn't noticed.
+const WsStaleMs = 12000;
+// A drop that's back within this long reconnects without flashing "Reconnecting".
+const WsQuietReconnectMs = 3000;
+
 function connectWs() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${protocol}://${location.host}/ws`);
   state.ws = ws;
+  let lastMessageAt = Date.now();
 
-  ws.addEventListener("open", () => setConnection("Live", true));
-  ws.addEventListener("close", () => {
-    setConnection("Reconnecting");
-    setTimeout(connectWs, 1500);
+  const drop = () => {
+    if (state.ws !== ws) return;  // already replaced
+    state.ws = null;
+    clearInterval(watchdog);
+    ws.close();
+    state.wsFailures = (state.wsFailures || 0) + 1;
+    if (!state.wsStatusTimer) {
+      state.wsStatusTimer = setTimeout(() => setConnection("Reconnecting"), WsQuietReconnectMs);
+    }
+    // Try again almost at once, then back off to 5 s while the link stays down.
+    setTimeout(connectWs, Math.min(5000, 250 * 2 ** Math.min(state.wsFailures - 1, 5)));
+  };
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastMessageAt > WsStaleMs) drop();
+  }, 2000);
+
+  ws.addEventListener("open", () => {
+    state.wsFailures = 0;
+    clearTimeout(state.wsStatusTimer);
+    state.wsStatusTimer = null;
+    setConnection("Live", true);
   });
+  ws.addEventListener("close", drop);
   ws.addEventListener("message", (event) => {
+    lastMessageAt = Date.now();
     const message = JSON.parse(event.data);
     if (message.type === "state") {
       renderState(message.data);

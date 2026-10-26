@@ -245,7 +245,6 @@ void SpaController::writeStateJson(JsonObject out) const {
   char timeBuffer[6];
   snprintf(timeBuffer, sizeof(timeBuffer), "%02u:%02u", state_.hour, state_.minute);
   out["spaTime"] = timeBuffer;
-  out["lastUpdateMs"] = state_.lastUpdateMs;
   out["valid"] = state_.valid;
   out["statusCaptureActive"] = statusCaptureActive_;
   out["statusCaptureLines"] = statusCaptureLog_.size();

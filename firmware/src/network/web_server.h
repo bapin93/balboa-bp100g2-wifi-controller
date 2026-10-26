@@ -22,7 +22,7 @@ class WebServerHub {
 
   void begin();
   void loop();
-  void broadcastState();
+  void broadcastState();  // sends now, changed or not
   // The longest main-loop pass since boot, for /api/system.
   void noteLoopTime(uint32_t ms) { loopMaxMs_ = ms > loopMaxMs_ ? ms : loopMaxMs_; }
 
@@ -60,6 +60,7 @@ class WebServerHub {
   const WeatherClient &weather_;
   SmartHeat &smart_;
   uint32_t lastBroadcastMs_ = 0;
+  String lastStateJson_;  // what was last sent, to skip repeats
   volatile uint32_t loopMaxMs_ = 0;
   bool stateBroadcastPending_ = false;
 };
