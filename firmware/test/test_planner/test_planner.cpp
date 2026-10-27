@@ -164,6 +164,34 @@ void test_tou_price() {
   TEST_ASSERT_EQUAL_FLOAT(1.0f, touPrice(tou, EnergyRates(), {2026, 10, 26}, 12));
 }
 
+void test_heats_in_one_run_up_to_ready() {
+  // A real overnight plan: 102°F at 6 PM Monday, 104 ready at 7:30 AM Tuesday for an hour, nearly 4 steps
+  // of heat. Where to put the heat is a near tie the grid can't resolve; it should go in one run that ends
+  // at the ready time, not pause partway.
+  constexpr uint32_t Monday6pm = Monday8am + 10 * 3600;
+  constexpr uint32_t ReadyAt = Monday6pm + 54 * Step;  // Tuesday 7:30 AM
+  static const float outside[] = {47, 46, 45, 45, 44, 44, 44, 43, 43, 44, 44, 44, 45, 44, 44, 44, 44, 44, 44,
+                                  44, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 42, 42, 42,
+                                  42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 41, 41, 41, 41};
+  PlanInput in;
+  in.start = Monday6pm;
+  in.waterTemp = 102;
+  in.heaterKw = 5.5f;
+  in.heaterRate = 11.25106f;
+  in.lossCoeff = 0.012f;
+  in.steps = buildPlanSteps(Monday6pm, Step, Steps, TouSchedule(), winterRates(), 104, [](uint32_t at) {
+    const size_t s = (at - Monday6pm) / Step;
+    return s < sizeof(outside) / sizeof(outside[0]) ? outside[s] : 41.0f;
+  });
+  addSoak(in, 104, ReadyAt, 1);
+  const PlanResult plan = HeatPlanner::plan(in);
+  TEST_ASSERT_FLOAT_WITHIN(0.3f, 0, plan.shortfall);
+  constexpr size_t Ready = 54;
+  const size_t first = firstHeatStep(plan);
+  TEST_ASSERT_TRUE(first < Ready);
+  for (size_t s = first; s < Ready; ++s) TEST_ASSERT_TRUE(plan.heat[s] > 0);  // no pause before ready
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_weekday_soak_heats_before_peak);
@@ -177,5 +205,6 @@ int main() {
   RUN_TEST(test_missing_water_temp_is_not_planned);
   RUN_TEST(test_soak_helpers);
   RUN_TEST(test_tou_price);
+  RUN_TEST(test_heats_in_one_run_up_to_ready);
   return UNITY_END();
 }

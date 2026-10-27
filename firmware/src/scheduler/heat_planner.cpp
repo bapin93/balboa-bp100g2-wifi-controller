@@ -51,6 +51,35 @@ float shortfall(const PlanStep &step, float temp) {
   return isnan(step.minTemp) ? 0 : std::max(0.0f, std::min(step.minTemp, step.maxTemp) - temp);
 }
 
+struct Followed {
+  PlanResult result;
+  float total = 0;  // cost plus shortfall penalties, to compare plans by
+};
+
+// Runs the heater as `heat` says from the actual water temp.
+Followed follow(const PlanInput &in, const Physics &physics, float kwhPerStep, const std::vector<bool> &heat) {
+  Followed out;
+  PlanResult &result = out.result;
+  result.heat.reserve(heat.size());
+  result.temp.reserve(heat.size());
+  float temp = in.waterTemp;
+  for (size_t s = 0; s < heat.size(); ++s) {
+    const PlanStep &step = in.steps[s];
+    const Transition move = simulate(physics, step, temp, heat[s]);
+    temp = move.next;
+    const float missed = shortfall(step, temp);
+    result.heat.push_back(move.fraction);
+    result.temp.push_back(temp);
+    result.kwh += move.fraction * kwhPerStep;
+    result.cost += move.fraction * kwhPerStep * step.price;
+    result.shortfall = std::max(result.shortfall, missed);
+    out.total += missed * HeatPlanner::ShortfallCostPerF;
+  }
+  out.total += result.cost;
+  result.ok = true;
+  return out;
+}
+
 }  // namespace
 
 PlanResult HeatPlanner::plan(const PlanInput &in) {
@@ -104,22 +133,52 @@ PlanResult HeatPlanner::plan(const PlanInput &in) {
 
   // Forward: follow the choices from the actual water temp. Between grid points, take the colder one's
   // choice; it heats whenever the warmer one would, so requirements are still met.
-  result.heat.reserve(steps);
-  result.temp.reserve(steps);
+  std::vector<bool> heat(steps);
   float temp = in.waterTemp;
   for (size_t s = 0; s < steps; ++s) {
-    const PlanStep &step = in.steps[s];
     const float pos = std::min(std::max((temp - lo) / GridStepF, 0.0f), static_cast<float>(points - 1));
-    const Transition move = simulate(physics, step, temp, heatHere[s * points + static_cast<size_t>(pos)]);
-    temp = move.next;
-    result.heat.push_back(move.fraction);
-    result.temp.push_back(temp);
-    result.kwh += move.fraction * kwhPerStep;
-    result.cost += move.fraction * kwhPerStep * step.price;
-    result.shortfall = std::max(result.shortfall, shortfall(step, temp));
+    heat[s] = heatHere[s * points + static_cast<size_t>(pos)];
+    temp = simulate(physics, in.steps[s], temp, heat[s]).next;
   }
-  result.ok = true;
-  return result;
+  std::vector<bool>().swap(heatHere);
+  Followed best = follow(in, physics, kwhPerStep, heat);
+
+  // Taking the colder point's choice can start heating a step early, which then shows up as a pause
+  // before the deadline. Slide each short pause to the front of its heating run whenever that costs no
+  // more and still meets every requirement: heating later loses less heat, and the heater runs once,
+  // finishing just in time. Each move only shifts heat later, so this ends.
+  for (bool moved = true; moved;) {
+    moved = false;
+    const std::vector<float> &on = best.result.heat;
+    for (size_t first = 1; first + 1 < steps; ++first) {
+      if (on[first] > 0 || on[first - 1] == 0 || heat[first]) {
+        continue;
+      }
+      size_t last = first;  // the pause is first..last
+      while (last + 1 < steps && on[last + 1] == 0 && !heat[last + 1] && last - first + 1 < MaxPauseSteps) {
+        ++last;
+      }
+      if (last + 1 >= steps || on[last + 1] == 0) {
+        continue;
+      }
+      size_t runStart = first - 1;
+      while (runStart > 0 && on[runStart - 1] > 0) {
+        --runStart;
+      }
+      std::vector<bool> trial = heat;
+      for (size_t s = runStart; s <= last; ++s) {
+        trial[s] = s >= runStart + (last - first + 1);
+      }
+      Followed shifted = follow(in, physics, kwhPerStep, trial);
+      if (shifted.total <= best.total + 1e-4f) {
+        heat.swap(trial);
+        best = std::move(shifted);
+        moved = true;
+        break;
+      }
+    }
+  }
+  return best.result;
 }
 
 float hoursToReach(float from, float to, float heaterRate, float lossCoeff, float outside) {

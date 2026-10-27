@@ -47,6 +47,7 @@ class HeatPlanner {
  public:
   static constexpr float GridStepF = 0.25f;
   static constexpr float ShortfallCostPerF = 100.0f;  // $ per °F short: requirements beat any price
+  static constexpr size_t MaxPauseSteps = 2;  // pauses this long or shorter get moved to the front of their run
 
   static PlanResult plan(const PlanInput &input);
 };

@@ -805,10 +805,42 @@ class MockSpa:
                 choice[i] = on_cost < off_cost - 1e-6
                 row[i] = on_cost if choice[i] else off_cost
             policy[s], later = choice, row
-        temp, out, cost, worst, used = water, [], 0.0, 0.0, 0.0
+        heat, temp = [], water
         for s, step in enumerate(steps):
-            temp, f = self._simulate(temp, policy[s][int(min(max((temp - lo) / 0.25, 0), points - 1))],
-                                     step["outside"], target)
+            heat.append(policy[s][int(min(max((temp - lo) / 0.25, 0), points - 1))])
+            temp = self._simulate(temp, heat[-1], step["outside"], target)[0]
+
+        def follow(heat):
+            temp, run, cost, total = water, [], 0.0, 0.0
+            for s, step in enumerate(steps):
+                temp, f = self._simulate(temp, heat[s], step["outside"], target)
+                run.append((f, temp))
+                cost += f * kwh * step["price"]
+                total += short(step, temp) * 100
+            return run, cost, total + cost
+        run, _, best = follow(heat)
+        # Slide pauses of up to 2 steps to the front of their heating run when that costs no more.
+        moved = True
+        while moved:
+            moved = False
+            for first in range(1, count - 1):
+                if run[first][0] > 0 or run[first - 1][0] == 0 or heat[first]:
+                    continue
+                last = first
+                while last + 1 < count and run[last + 1][0] == 0 and not heat[last + 1] and last - first + 1 < 2:
+                    last += 1
+                if last + 1 >= count or run[last + 1][0] == 0:
+                    continue
+                start = first - 1
+                while start > 0 and run[start - 1][0] > 0:
+                    start -= 1
+                trial = heat[:start] + [False] * (last - first + 1) + [True] * (first - start) + heat[last + 1:]
+                trial_run, _, total = follow(trial)
+                if total <= best + 1e-4:
+                    heat, run, best, moved = trial, trial_run, total, True
+                    break
+        out, cost, worst, used = [], 0.0, 0.0, 0.0
+        for (f, temp), step in zip(run, steps):
             cost, used, worst = cost + f * kwh * step["price"], used + f * kwh, max(worst, short(step, temp))
             out.append({"heat": round(f, 2), "temp": round(temp, 1), "price": step["price"],
                         "outside": round(step["outside"]), **({"min": step["min"]} if step["min"] else {})})
