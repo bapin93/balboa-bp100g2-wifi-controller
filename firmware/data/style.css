@@ -492,6 +492,9 @@ h1 {
 
 .chart-card {
   position: relative;
+  -webkit-touch-callout: none;  /* press and hold reads the chart, not selects its text */
+  -webkit-user-select: none;
+  user-select: none;
   padding: 14px 12px 10px;
   border: 1px solid var(--line);
   border-radius: 16px;

@@ -342,6 +342,10 @@ function renderState(data) {
   $("#holdStatus").textContent = data.hold ? `On · ${data.holdMinutes} min left` : "Off";
   renderPumps(data, caps);
   renderOverview(data, caps);
+  const runtimeVisible = $("#stats").classList.contains("active") && $("#statsRuntime").classList.contains("active");
+  if (runtimeVisible && state.runtimeHours && state.hoursChartLive !== hoursLiveKey(data)) {
+    renderHoursChart();  // keep its "now" point current
+  }
   const maintRefreshMs = $("#maintenance").classList.contains("active") ? 60000 : 600000;
   if (Date.now() - state.maintLoadedAt > maintRefreshMs) {
     state.maintLoadedAt = Date.now();  // throttle; pumped hours only change slowly
@@ -988,8 +992,14 @@ function renderUsageChart() {
   container.prepend(svg);
 }
 
+// What the last-48-hours chart's "now" point shows, to redraw it only when that changes.
+function hoursLiveKey(data) {
+  return data ? `${data.valid}/${data.waterTemp}/${data.setTemp}/${!!data.heating}` : "";
+}
+
 function renderHoursChart() {
   const container = $("#hoursChart");
+  state.hoursChartLive = hoursLiveKey(state.data);
   const hours = state.runtimeHours || [];
   const tip = chartTooltip(container);
   container.querySelector("svg")?.remove();
@@ -1000,8 +1010,16 @@ function renderHoursChart() {
     return;
   }
   const t0 = hours[0].start;
-  const t1 = hours[hours.length - 1].start + 3600;
+  const lastStart = hours[hours.length - 1].start;
+  // Hours are averages, so the current hour ends in a live "now" point with what the spa reports.
+  const now = Math.floor(Date.now() / 1000);
+  const live = state.data?.valid && now > lastStart && now < lastStart + 7200
+    ? { start: now, live: true, waterTemp: state.data.waterTemp, setTemp: state.data.setTemp, heating: !!state.data.heating }
+    : null;
+  const t1 = live ? now : lastStart + 3600;
+  const end = (hour) => Math.min(hour.start + 3600, t1);
   const water = hours.filter((h) => Number.isFinite(h.waterTemp)).map((h) => ({ t: h.start + 1800, v: h.waterTemp }));
+  if (Number.isFinite(live?.waterTemp)) water.push({ t: now, v: live.waterTemp });
   const setPoints = hours.filter((h) => Number.isFinite(h.setTemp)).map((h) => ({ t: h.start, v: h.setTemp }));
   const outside = (state.weather?.hourly || []).filter((p) => p.t >= t0 && p.t <= t1);
   $("#outsideKey").hidden = !outside.length;
@@ -1016,7 +1034,8 @@ function renderHoursChart() {
   const heatHeight = 34;
   const height = heatTop + heatHeight + 20;
   const x = (t) => pad.left + ((t - t0) / (t1 - t0)) * (width - pad.left - pad.right);
-  const values = [...water, ...setPoints, ...outside].map((p) => p.v);
+  const liveSet = Number.isFinite(live?.setTemp) ? live.setTemp : NaN;
+  const values = [...water, ...setPoints, ...outside].map((p) => p.v).concat(Number.isFinite(liveSet) ? [liveSet] : []);
   const scale = temperatureScale(Math.min(...values), Math.max(...values));
   const y = (v) => pad.top + tempHeight - ((v - scale.min) / (scale.max - scale.min)) * tempHeight;
 
@@ -1042,10 +1061,14 @@ function renderHoursChart() {
   let setPath = "";
   setPoints.forEach((point, i) => {
     const jump = i === 0 || point.t - setPoints[i - 1].t > 3600;
-    setPath += `${jump ? "M" : "L"}${x(point.t).toFixed(1)},${y(point.v).toFixed(1)}H${x(point.t + 3600).toFixed(1)}`;
+    setPath += `${jump ? "M" : "L"}${x(point.t).toFixed(1)},${y(point.v).toFixed(1)}H${x(Math.min(point.t + 3600, t1)).toFixed(1)}`;
   });
+  if (setPath && Number.isFinite(liveSet)) setPath += `V${y(liveSet).toFixed(1)}`;  // ends at the set temp now
   if (setPath) {
     svgEl("path", { d: setPath, fill: "none", stroke: "var(--chart-set)", "stroke-width": 1.5, "stroke-linejoin": "round" }, svg);
+  }
+  if (Number.isFinite(liveSet)) {
+    svgEl("circle", { cx: x(now), cy: y(liveSet), r: 3, fill: "var(--chart-set)", stroke: "var(--surface)", "stroke-width": 1.5 }, svg);
   }
   svgEl("path", { d: linePath(water, x, y, 5400), fill: "none", stroke: "var(--chart-water)",
     "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
@@ -1060,30 +1083,38 @@ function renderHoursChart() {
     if (!hour.heatingSec) return;
     const h = Math.max(2, (Math.min(hour.heatingSec, 3600) / 3600) * heatHeight);
     const left = x(hour.start) + 1;
-    svgEl("rect", { x: left, y: heatTop + heatHeight - h, width: Math.max(1, x(hour.start + 3600) - left - 1), height: h,
+    svgEl("rect", { x: left, y: heatTop + heatHeight - h, width: Math.max(1, x(end(hour)) - left - 1), height: h,
       rx: 1.5, fill: "var(--chart-heater)" }, svg);
   });
 
   const cursor = svgEl("line", { y1: pad.top, y2: heatTop + heatHeight, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
   const hit = svgEl("rect", { x: pad.left, y: 0, width: width - pad.left - pad.right, height: heatTop + heatHeight, fill: "transparent" }, svg);
   const nearestOutside = (t) => outside.reduce((best, p) => (!best || Math.abs(p.t - t) < Math.abs(best.t - t) ? p : best), null);
+  // "Now" stands in for the hour so far, so it's easy to land on at the right edge.
+  const center = (h) => (h.live ? now : (h.start + end(h)) / 2);
+  const entries = !live ? hours : now < lastStart + 3600
+    ? [...hours.slice(0, -1), { ...live, start: lastStart, heatingSec: hours[hours.length - 1].heatingSec }]
+    : [...hours, live];
   const show = (clientX) => {
     const box = svg.getBoundingClientRect();
     const px = clientX - box.left;
     const t = t0 + ((px - pad.left) / (width - pad.left - pad.right)) * (t1 - t0);
-    const hour = hours.reduce((best, h) => (Math.abs(h.start + 1800 - t) < Math.abs(best.start + 1800 - t) ? h : best), hours[0]);
-    const cx = x(hour.start + 1800);
+    const hour = entries.reduce((best, h) => (Math.abs(center(h) - t) < Math.abs(center(best) - t) ? h : best), entries[0]);
+    const cx = x(center(hour));
     cursor.setAttribute("x1", cx);
     cursor.setAttribute("x2", cx);
     cursor.setAttribute("visibility", "visible");
-    const out = nearestOutside(hour.start + 1800);
+    const out = nearestOutside(center(hour));
     const rows = [
       { value: Number.isFinite(hour.waterTemp) ? `${hour.waterTemp.toFixed(1)}°F` : "--", label: "Spa", key: "water" },
       { value: Number.isFinite(hour.setTemp) ? `${Math.round(hour.setTemp)}°F` : "--", label: "Set", key: "set" },
     ];
-    if (outside.length) rows.push({ value: out && Math.abs(out.t - hour.start - 1800) <= 3600 ? `${Math.round(out.v)}°F` : "--", label: "Outside", key: "outside" });
-    rows.push({ value: `${Math.round(hour.heatingSec / 60)} min`, label: "Heater", key: "heater" });
-    showTip(container, tip, hourLabel(hour.start, true), rows, cx);
+    if (outside.length) rows.push({ value: out && Math.abs(out.t - center(hour)) <= 3600 ? `${Math.round(out.v)}°F` : "--", label: "Outside", key: "outside" });
+    if (hour.live) rows.push({ value: hour.heating ? "On" : "Off", label: "Heater", key: "heater" });
+    if (Number.isFinite(hour.heatingSec)) {
+      rows.push({ value: `${Math.round(hour.heatingSec / 60)} min`, label: hour.live ? "Heater this hour" : "Heater", key: hour.live ? null : "heater" });
+    }
+    showTip(container, tip, hour.live ? "Now" : hourLabel(hour.start, true), rows, cx);
   };
   hit.addEventListener("pointermove", (event) => show(event.clientX));
   hit.addEventListener("pointerdown", (event) => show(event.clientX));
