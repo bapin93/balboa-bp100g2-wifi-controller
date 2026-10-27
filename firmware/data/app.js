@@ -1019,7 +1019,8 @@ function renderHoursChart() {
     : null;
   const t1 = live ? now : lastStart + 3600;
   const end = (hour) => Math.min(hour.start + 3600, t1);
-  const water = hours.filter((h) => Number.isFinite(h.waterTemp)).map((h) => ({ t: h.start + 1800, v: h.waterTemp }));
+  // Each average sits mid-way through the time it covers, so the current hour's stays before "now".
+  const water = hours.filter((h) => Number.isFinite(h.waterTemp)).map((h) => ({ t: (h.start + end(h)) / 2, v: h.waterTemp }));
   if (Number.isFinite(live?.waterTemp)) water.push({ t: now, v: live.waterTemp });
   const setPoints = hours.filter((h) => Number.isFinite(h.setTemp)).map((h) => ({ t: h.start, v: h.setTemp }));
   const outside = (state.weather?.hourly || []).filter((p) => p.t >= t0 && p.t <= t1);
