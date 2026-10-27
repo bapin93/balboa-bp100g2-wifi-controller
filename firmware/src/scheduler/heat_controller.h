@@ -57,7 +57,7 @@ class HeatController {
   static constexpr float CoastMarginF = 2.0f;  // coast set temp sits this far under the plan's low point
   // A lower set temp from the plan waits for a running heater to finish (so a short top-up isn't cut off
   // after a couple of minutes), but no longer than this, so a long heat-up still stops when the plan says.
-  // The owner's own changes (cancel, Auto off) don't wait.
+  // The owner's own changes (cancel, Auto off) and the end of a soak don't wait.
   static constexpr uint32_t LetHeaterFinishSec = 20 * 60;
   // Heating stretches this many coast steps apart or fewer are run as one, avoiding a stop and restart.
   static constexpr size_t MergeGapSteps = 2;
@@ -126,6 +126,7 @@ class HeatController {
   float pendingSet_ = NAN;
   uint32_t pendingAt_ = 0;
   uint32_t lowerHeldSince_ = 0;  // when a lower set temp started waiting on the heater; 0 = not waiting
+  bool lowerNow_ = false;  // a soak just ended: the next lower set temp goes out without waiting
   float restoreTemp_ = NAN;
   uint32_t restoreUntil_ = 0;
   float readyInHours_ = NAN;  // heat-up time to the comfort temp from the water now

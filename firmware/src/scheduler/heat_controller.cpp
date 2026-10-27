@@ -88,7 +88,11 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
       endSoak(now);
       desired = restoreTemp_;  // NAN with Auto on: it takes over below
     } else if (now >= soak_.readyAt || soak_.asap) {
-      desired = soak_.target;  // as soon as possible means straight through, nothing to plan
+      // As soon as possible means straight through. The plan is only kept for the app's chart.
+      if (replanNeeded_ || !plan_.ok || now >= planStart_ + StepSec) {
+        replan(tick, context);
+      }
+      desired = soak_.target;
     } else {
       if (replanNeeded_ || !plan_.ok || now >= planStart_ + StepSec) {
         replan(tick, context);
@@ -109,6 +113,9 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
     return NAN;
   }
   desired = roundf(desired);
+  if (desired >= roundf(tick.setTemp)) {
+    lowerNow_ = false;
+  }
   if (desired == roundf(tick.setTemp)) {
     pendingSet_ = NAN;
     return NAN;
@@ -116,7 +123,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
   if (tick.inUse && desired < tick.setTemp) {
     return NAN;  // never cool the water on someone
   }
-  if (planned && desired < tick.setTemp && tick.heating) {
+  if (planned && desired < tick.setTemp && tick.heating && !lowerNow_) {
     if (!lowerHeldSince_) {
       lowerHeldSince_ = now;
     }
@@ -133,6 +140,7 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
 }
 
 void HeatController::commandSent(float setTemp, uint32_t now) {
+  lowerNow_ = false;
   pendingSet_ = setTemp;
   pendingAt_ = now;
 }
@@ -181,6 +189,7 @@ const char *HeatController::scheduleSoak(float target, uint32_t readyAt, float h
   soak_.asap = asap;
   soak_.restoreTemp = isnan(restore) ? roundf(tick.setTemp) : restore;
   soakArrived_ = false;  // counted as intent once its ready time comes
+  lowerNow_ = false;
   manual_.active = false;
   restoreTemp_ = NAN;
   replanNeeded_ = true;
@@ -220,6 +229,7 @@ void HeatController::endSoak(uint32_t now) {
   plan_ = PlanResult();
   replanNeeded_ = true;
   dirty_ = true;
+  lowerNow_ = true;  // the heater was only keeping the soak hot
   if (!autoEnabled_) {
     startRestore(soak_.restoreTemp, now);
   }
@@ -301,7 +311,9 @@ void HeatController::replan(const ControllerTick &tick, const PlanContext &conte
     step.minTemp = need;
   }
   if (soak_.active) {
-    addSoak(in, soak_.target, soak_.readyAt, soak_.hours);
+    // As soon as possible heats straight through, so the plan wants the target from the start.
+    const uint32_t from = soak_.asap ? planStart_ : soak_.readyAt;
+    addSoak(in, soak_.target, from, static_cast<float>(soakEnd() - from) / 3600.0f);
   }
   plan_ = HeatPlanner::plan(in);
   holdPlan_ = PlanResult();

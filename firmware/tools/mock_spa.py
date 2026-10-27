@@ -905,7 +905,10 @@ class MockSpa:
         count = min(144, (ready + int(hours * 3600) - start) // PLAN_STEP + 2)
         restore = self.soak["restore"] if self.soak else s["setTemp"]
         self.soak = {"target": round(target), "readyAt": ready, "hours": hours, "asap": asap, "restore": restore,
-                     "start": start, "plan": None if asap else self._plan(s["waterTemp"], start, count, target, ready, hours)}
+                     "start": start}
+        # As soon as possible heats straight through: the plan (just for the chart) wants the target from the start.
+        self.soak["plan"] = (self._plan(s["waterTemp"], start, count, target, start, (ready - start) / 3600 + hours)
+                             if asap else self._plan(s["waterTemp"], start, count, target, ready, hours))
         self.manual = None
         return 202, "soak scheduled"
 

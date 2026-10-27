@@ -364,6 +364,38 @@ void test_lets_a_heater_run_finish() {
   TEST_ASSERT_TRUE(controller.tick(t, spa.ctx) < 102);
 }
 
+void test_soak_end_drops_to_standby_right_away() {
+  HeatController controller;
+  Spa spa{controller};
+  spa.ctx = autoContext();
+  spa.setTemp = 104;
+  spa.water = 103;
+  spa.run(60);
+  controller.scheduleSoak(104, 0, 1, spa.tick(), spa.ctx);
+  spa.run(2 * 60);
+  spa.water = 103.4f;  // the heater is keeping the soak hot
+  spa.heating = true;
+  controller.cancelSoak(spa.tick());
+  ControllerTick t = spa.tick();
+  t.now += 60;
+  TEST_ASSERT_TRUE(controller.tick(t, spa.ctx) < 100);  // Auto's standby, without waiting for the heater
+}
+
+void test_asap_soak_charts_its_heat_up() {
+  HeatController controller;
+  Spa spa{controller};
+  spa.ctx = autoContext();
+  spa.setTemp = 94;
+  spa.water = 94;
+  spa.run(60);
+  controller.scheduleSoak(104, 0, 1, spa.tick(), spa.ctx);
+  spa.run(60);
+  JsonDocument doc;
+  controller.writePlanJson(doc.to<JsonObject>());
+  TEST_ASSERT_EQUAL_FLOAT(104, doc["plan"]["target"]);
+  TEST_ASSERT_TRUE(doc["plan"]["steps"][0]["heat"].as<float>() > 0);  // the chart shows it heating now
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_soak_follows_the_plan_and_restores);
@@ -381,5 +413,7 @@ int main() {
   RUN_TEST(test_auto_takes_over_after_a_soak);
   RUN_TEST(test_low_range_stands_aside);
   RUN_TEST(test_lets_a_heater_run_finish);
+  RUN_TEST(test_soak_end_drops_to_standby_right_away);
+  RUN_TEST(test_asap_soak_charts_its_heat_up);
   return UNITY_END();
 }
