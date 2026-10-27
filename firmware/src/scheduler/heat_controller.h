@@ -54,7 +54,6 @@ class HeatController {
   static constexpr uint32_t SoakAfterUseSec = 30 * 60;  // a soak runs on this long after the last use
   static constexpr uint32_t ManualAfterUseSec = 60 * 60;
   static constexpr uint32_t ManualMaxSec = 4 * 3600;  // when the tub is never used during the hold
-  static constexpr float CoastMarginF = 2.0f;  // coast set temp sits this far under the plan's low point
   // A lower set temp from the plan waits for a running heater to finish (so a short top-up isn't cut off
   // after a couple of minutes), but no longer than this, so a long heat-up still stops when the plan says.
   // The owner's own changes (cancel, Auto off) and the end of a soak don't wait.

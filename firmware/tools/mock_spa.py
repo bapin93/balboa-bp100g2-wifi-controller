@@ -928,7 +928,9 @@ class MockSpa:
             s += 1
         if heating:
             return min(target, math.ceil(max(run) - 0.05))
-        return max(self.config["smart"]["minTemp"], math.floor(min(run)) - 2)
+        floor = self.config["smart"]["minTemp"]
+        need = steps[(now - start) // PLAN_STEP].get("min")
+        return min(target, max(floor, math.ceil(need - 0.05) if need else floor))
 
     def _step_smart(self):
         now = int(time.time())

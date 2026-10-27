@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
@@ -396,6 +397,24 @@ void test_asap_soak_charts_its_heat_up() {
   TEST_ASSERT_TRUE(doc["plan"]["steps"][0]["heat"].as<float>() > 0);  // the chart shows it heating now
 }
 
+void test_coasting_sets_the_step_minimum() {
+  HeatController controller;
+  Spa spa{controller};
+  spa.ctx = autoContext();
+  spa.setTemp = 102;
+  spa.water = 101;
+  for (int i = 0; i < 40; ++i) {  // every half hour through the next 20 hours
+    spa.run(1800);
+    JsonDocument doc;
+    controller.writePlanJson(doc.to<JsonObject>());
+    JsonVariantConst step = doc["plan"]["steps"][0];
+    if (step["heat"].as<float>() > 0 || spa.heating) continue;
+    // Not a few degrees under the planned low point: just what this half hour needs.
+    const float min = step["min"].is<float>() ? step["min"].as<float>() : 90;
+    TEST_ASSERT_EQUAL_FLOAT(std::max(90.0f, ceilf(min - 0.05f)), spa.setTemp);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_soak_follows_the_plan_and_restores);
@@ -415,5 +434,6 @@ int main() {
   RUN_TEST(test_lets_a_heater_run_finish);
   RUN_TEST(test_soak_end_drops_to_standby_right_away);
   RUN_TEST(test_asap_soak_charts_its_heat_up);
+  RUN_TEST(test_coasting_sets_the_step_minimum);
   return UNITY_END();
 }

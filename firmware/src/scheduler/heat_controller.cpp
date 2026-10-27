@@ -330,8 +330,8 @@ size_t HeatController::stepAt(uint32_t now) const {
 
 // Heating: the highest temp in this run of heated steps, so the set temp stays put for the whole run. Runs
 // separated by a pause of MergeGapSteps or less count as one, so the heater doesn't stop and restart for it.
-// Coasting: a little under the lowest temp before heating resumes, so the spa only steps in if the
-// water cools faster than planned.
+// Coasting: this step's requirement, so the spa only steps in below it. Water cooling faster than
+// planned shows up in the next reading and the replan moves the heating earlier, at the cheapest time.
 float HeatController::setpointFromPlan(uint32_t now, const PlanContext &context, bool heaterOn) const {
   const size_t count = plan_.heat.size();
   size_t s = stepAt(now);
@@ -363,11 +363,8 @@ float HeatController::setpointFromPlan(uint32_t now, const PlanContext &context,
     }
     return std::min(planTarget_, ceilf(high - 0.05f));
   }
-  float low = plan_.temp[s];
-  for (; s < count && plan_.heat[s] == 0; ++s) {
-    low = std::min(low, plan_.temp[s]);
-  }
-  return std::max(context.minTemp, floorf(low) - CoastMarginF);
+  const float need = s < planMin_.size() && !isnan(planMin_[s]) ? ceilf(planMin_[s] - 0.05f) : context.minTemp;
+  return std::min(planTarget_, std::max(context.minTemp, need));
 }
 
 void HeatController::startRestore(float temp, uint32_t now) {

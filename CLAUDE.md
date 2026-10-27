@@ -239,8 +239,8 @@ Likelihood sets how long the owner will wait for heat-up:
 
 Turning the plan into set temps:
 - While heating: the highest planned temp in that heating run.
-- While coasting: `max(minTemp, floor(lowest planned) − 2)`, so the spa steps in if the water cools
-  faster than planned.
+- While coasting: that step's `minTemp`, rounded up (90 overnight). Water cooling faster than planned
+  shows up in the next reading, and the replan moves the heating earlier.
 
 Rules:
 - Replan every 15 min from the current water temp.
