@@ -120,8 +120,8 @@ float HeatController::tick(const ControllerTick &tick, const PlanContext &contex
     pendingSet_ = NAN;
     return NAN;
   }
-  if (tick.inUse && desired < tick.setTemp) {
-    return NAN;  // never cool the water on someone
+  if (tick.inUse && desired < tick.setTemp && !lowerNow_) {
+    return NAN;  // never cool the water on someone, unless they just ended their soak
   }
   if (planned && desired < tick.setTemp && tick.heating && !lowerNow_) {
     if (!lowerHeldSince_) {
@@ -197,23 +197,11 @@ const char *HeatController::scheduleSoak(float target, uint32_t readyAt, float h
   return nullptr;
 }
 
+// Ending a soak means the owner is done, even with the light or jets still on, so it drops right away.
 void HeatController::cancelSoak(const ControllerTick &tick) {
-  if (!soak_.active) {
-    return;
+  if (soak_.active) {
+    endSoak(tick.now);
   }
-  if (tick.inUse) {
-    // Someone's in: leave the temp alone and treat it as theirs.
-    soak_.active = false;
-    plan_ = PlanResult();
-    manual_ = Manual();
-    manual_.active = true;
-    manual_.since = tick.now;
-    manual_.temp = roundf(tick.setTemp);
-    manual_.lastUse = tick.now;
-    dirty_ = true;
-    return;
-  }
-  endSoak(tick.now);
 }
 
 void HeatController::endManual() {

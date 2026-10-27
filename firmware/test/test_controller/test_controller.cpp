@@ -149,7 +149,7 @@ void test_manual_hold_lasts_four_hours_if_unused() {
   TEST_ASSERT_FALSE(controller.manualActive());
 }
 
-void test_cancel_restores_unless_in_use() {
+void test_cancel_restores_even_in_use() {
   HeatController controller;
   Spa spa{controller};
   controller.scheduleSoak(104, 0, 2, spa.tick(), spa.ctx);
@@ -161,11 +161,11 @@ void test_cancel_restores_unless_in_use() {
 
   controller.scheduleSoak(104, 0, 2, spa.tick(), spa.ctx);
   spa.run(120);
-  spa.inUse = true;
+  spa.inUse = true;  // getting out with the light still on
   controller.cancelSoak(spa.tick());
-  spa.run(Hour);
-  TEST_ASSERT_EQUAL_FLOAT(104, spa.setTemp);  // left alone with someone in
-  TEST_ASSERT_TRUE(controller.manualActive());
+  spa.run(120);
+  TEST_ASSERT_EQUAL_FLOAT(100, spa.setTemp);  // ending it means they're done
+  TEST_ASSERT_FALSE(controller.manualActive());
 }
 
 void test_asap_ready_time() {
@@ -403,7 +403,7 @@ int main() {
   RUN_TEST(test_panel_change_takes_over);
   RUN_TEST(test_manual_hold_ends_an_hour_after_use);
   RUN_TEST(test_manual_hold_lasts_four_hours_if_unused);
-  RUN_TEST(test_cancel_restores_unless_in_use);
+  RUN_TEST(test_cancel_restores_even_in_use);
   RUN_TEST(test_asap_ready_time);
   RUN_TEST(test_rejects_bad_requests);
   RUN_TEST(test_state_survives_a_reboot);

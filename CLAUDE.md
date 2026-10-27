@@ -229,7 +229,9 @@ Likelihood sets how long the owner will wait for heat-up:
   (`smart.readyTemp`, default 102). Turning the spa up by hand (e.g. to 104 for a soak) doesn't change it.
 - **Soak**: target temp held from `readyAt` for N hours, with the plan meeting it as cheaply as possible.
   As soon as possible (`readyAt` 0) heats straight through. A soak runs on until 30 min after the last
-  use. When it ends, Auto takes over (or the old set temp is restored if Auto is off).
+  use. When it ends, Auto takes over right away, even mid heater run (or the old set temp is restored if Auto
+  is off). Ending it by hand (**End**/**Cancel**) means the owner is done, so this happens even with the
+  light or jets still on.
 - **Manual**: any set temp change the controller didn't send (app or spa panel) pauses everything. The
   pause lasts until 1 h after the last use, or 4 h if the tub is never used. **Resume** ends it early.
 - **Low temp range**: the controller does nothing at all (no 90°F floor, any soak dropped), so the tub can
@@ -242,7 +244,7 @@ Turning the plan into set temps:
 
 Rules:
 - Replan every 15 min from the current water temp.
-- Never lower the set temp while the tub is in use.
+- Never lower the set temp while the tub is in use, except right after the owner ends a soak.
 - Do nothing on a stale spa state or before NTP has set the clock.
 
 `SmartHeat` runs this once a second, sends `setTemp` through the spa command queue, and saves

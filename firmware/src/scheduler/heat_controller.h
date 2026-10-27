@@ -44,7 +44,7 @@ struct ControllerTick {
 //   - Manual: a set temp change the controller didn't make (from the app or the spa's own panel) means
 //     someone took over; a soak is dropped and nothing is sent until the hold ends.
 // In the spa's low temp range it does nothing at all, and the range switch doesn't count as a manual change.
-// Nothing ever lowers the set temp while the tub is in use.
+// Nothing lowers the set temp while the tub is in use, except the owner ending a soak.
 class HeatController {
  public:
   static constexpr uint32_t StepSec = 900;
@@ -126,7 +126,7 @@ class HeatController {
   float pendingSet_ = NAN;
   uint32_t pendingAt_ = 0;
   uint32_t lowerHeldSince_ = 0;  // when a lower set temp started waiting on the heater; 0 = not waiting
-  bool lowerNow_ = false;  // a soak just ended: the next lower set temp goes out without waiting
+  bool lowerNow_ = false;  // a soak just ended: the next lower set temp goes out without waiting, even in use
   float restoreTemp_ = NAN;
   uint32_t restoreUntil_ = 0;
   float readyInHours_ = NAN;  // heat-up time to the comfort temp from the water now

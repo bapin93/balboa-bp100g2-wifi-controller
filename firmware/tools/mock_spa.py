@@ -44,6 +44,7 @@ PLAN_HEATER_RATE, PLAN_LOSS, PLAN_STEP = 6.0, 0.012, 900
 class MockSpa:
     def __init__(self, args):
         self.lock = threading.Lock()
+        self.soak_ended = False  # a soak was just ended by hand: Auto may lower even with someone in
         self.pump_speeds = [int(x) for x in args.pumps.split(",")] + [0, 0]
         self.heat_holds_pump = not args.no_heat_pump
         self.heat_rate = args.heat_rate  # F per real second while heating
@@ -885,12 +886,10 @@ class MockSpa:
             self.manual = None
             return 202, "smart heating resumed"
         if action == "cancelSoak":
-            if self.soak:
-                if self._in_use():
-                    self.manual = {"since": now, "temp": s["setTemp"], "until": now + 3600}
-                elif not self.config["smart"]["auto"]:
+            if self.soak:  # done, even with the light or jets still on
+                if not self.config["smart"]["auto"]:
                     s["setTemp"] = self.soak["restore"]
-                self.soak = None
+                self.soak, self.auto_plan, self.soak_ended = None, None, True
             return 202, "soak cancelled"
         target, hours, ready = float(cmd.get("target", s["setTemp"])), float(cmd.get("hours", 2)), int(cmd.get("readyAt") or 0)
         if not 80 <= target <= 104:
@@ -954,8 +953,9 @@ class MockSpa:
                                       "compare": {"holdCost": round(hold["cost"], 3), "holdKwh": round(hold["kwh"], 2),
                                                   "smartCost": round(fair["cost"], 3), "smartKwh": round(fair["kwh"], 2)}}
                 want = float(self._plan_setpoint(self.auto_plan["steps"], start, self.comfort, now))
-                if not (self._in_use() and want < self.state["setTemp"]):
+                if not (self._in_use() and want < self.state["setTemp"] and not self.soak_ended):
                     self.state["setTemp"] = want
+                self.soak_ended = False
             else:
                 self.auto_plan = None
             return
