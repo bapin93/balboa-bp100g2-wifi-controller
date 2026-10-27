@@ -819,7 +819,7 @@ function hourLabel(epoch, withDay = false) {
   return new Date(epoch * 1000).toLocaleString(undefined, options);
 }
 
-// Smart Standby's plan: predicted water against the "ready line" it must stay above, heater use and the
+// Smart Standby's plan: predicted water against the minimum it must stay above, heater use and the
 // TOU peak behind it.
 function renderPlanChart() {
   const container = $("#planChart");
@@ -924,8 +924,9 @@ function renderPlanChart() {
     cursor.setAttribute("x1", cx);
     cursor.setAttribute("x2", cx);
     cursor.setAttribute("visibility", "visible");
-    const rows = [{ value: `${s.temp.toFixed(1)}°F`, label: "Planned", key: "water" }];
-    if (Number.isFinite(s.min)) rows.push({ value: `${s.min.toFixed(1)}°F`, label: "Ready line", key: "set dashed" });
+    // Whole degrees, as the spa shows them. Both round the same way, so planned never reads under minimum.
+    const rows = [{ value: `${Math.round(s.temp)}°F`, label: "Planned", key: "water" }];
+    if (Number.isFinite(s.min)) rows.push({ value: `${Math.round(s.min)}°F`, label: "Minimum", key: "set dashed" });
     const hourMinutes = heatByHour.get(Math.floor((t0 + i * step) / 3600) * 3600) || 0;
     rows.push({ value: `${Math.round(hourMinutes)} min`, label: "Heater this hour", key: "heater" });
     if (Number.isFinite(s.price)) rows.push({ value: `$${s.price.toFixed(3)}/kWh`, label: s.price > cheapest ? "Peak" : "Off-peak", key: null });
@@ -1028,7 +1029,7 @@ function renderHoursChart() {
     : outside.length ? "" : "Outside temperature isn't available right now.";
 
   const width = container.clientWidth || 340;
-  const pad = { left: 30, right: 8, top: 6 };
+  const pad = { left: 30, right: 14, top: 6 };  // the right margin is where "now" is read
   const tempHeight = 130;
   const heatTop = pad.top + tempHeight + 22;
   const heatHeight = 34;
@@ -1088,18 +1089,16 @@ function renderHoursChart() {
   });
 
   const cursor = svgEl("line", { y1: pad.top, y2: heatTop + heatHeight, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" }, svg);
-  const hit = svgEl("rect", { x: pad.left, y: 0, width: width - pad.left - pad.right, height: heatTop + heatHeight, fill: "transparent" }, svg);
+  const hit = svgEl("rect", { x: pad.left, y: 0, width: width - pad.left, height: heatTop + heatHeight, fill: "transparent" }, svg);
   const nearestOutside = (t) => outside.reduce((best, p) => (!best || Math.abs(p.t - t) < Math.abs(best.t - t) ? p : best), null);
-  // "Now" stands in for the hour so far, so it's easy to land on at the right edge.
   const center = (h) => (h.live ? now : (h.start + end(h)) / 2);
-  const entries = !live ? hours : now < lastStart + 3600
-    ? [...hours.slice(0, -1), { ...live, start: lastStart, heatingSec: hours[hours.length - 1].heatingSec }]
-    : [...hours, live];
   const show = (clientX) => {
     const box = svg.getBoundingClientRect();
     const px = clientX - box.left;
     const t = t0 + ((px - pad.left) / (width - pad.left - pad.right)) * (t1 - t0);
-    const hour = entries.reduce((best, h) => (Math.abs(center(h) - t) < Math.abs(center(best) - t) ? h : best), entries[0]);
+    // At the right edge and past it: "now". An hour there is only a few pixels wide on a phone.
+    const hour = live && px >= x(now) - 1 ? live
+      : hours.reduce((best, h) => (Math.abs(center(h) - t) < Math.abs(center(best) - t) ? h : best), hours[0]);
     const cx = x(center(hour));
     cursor.setAttribute("x1", cx);
     cursor.setAttribute("x2", cx);
@@ -1110,10 +1109,8 @@ function renderHoursChart() {
       { value: Number.isFinite(hour.setTemp) ? `${Math.round(hour.setTemp)}°F` : "--", label: "Set", key: "set" },
     ];
     if (outside.length) rows.push({ value: out && Math.abs(out.t - center(hour)) <= 3600 ? `${Math.round(out.v)}°F` : "--", label: "Outside", key: "outside" });
-    if (hour.live) rows.push({ value: hour.heating ? "On" : "Off", label: "Heater", key: "heater" });
-    if (Number.isFinite(hour.heatingSec)) {
-      rows.push({ value: `${Math.round(hour.heatingSec / 60)} min`, label: hour.live ? "Heater this hour" : "Heater", key: hour.live ? null : "heater" });
-    }
+    rows.push(hour.live ? { value: hour.heating ? "On" : "Off", label: "Heater", key: "heater" }
+      : { value: `${Math.round(hour.heatingSec / 60)} min`, label: end(hour) < hour.start + 3600 ? "Heater so far" : "Heater", key: "heater" });
     showTip(container, tip, hour.live ? "Now" : hourLabel(hour.start, true), rows, cx);
   };
   hit.addEventListener("pointermove", (event) => show(event.clientX));
